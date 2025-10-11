@@ -141,7 +141,32 @@ group_size = 50
 prime_list = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79]
 analysis_history = [3, 5, 7, 9]
 err_num_rate = 5
-shifting_rate = 0.1
+
+# 新自适应阈值参数
+init_shifting_rate = 0.05  # 初始步长，建议0.01~0.05
+min_shifting_rate = 0.005  # 最小步长
+shifting_decay = 0.98      # 步长递减系数
+clip_min = 0.01            # 阈值下限
+clip_max = 0.2             # 阈值上限
+ema_lambda = 0.2           # 指数平滑系数（建议0.1~0.3）
+
+def adaptive_threshold_update(prev, target, epoch):
+    """
+    自适应阈值更新（递减步长+指数平滑+clip）
+    prev: 上一轮阈值
+    target: 当前目标（如实际命中率等）
+    epoch: 当前迭代轮数
+    return: 新阈值
+    """
+    # 步长递减
+    step = max(init_shifting_rate * (shifting_decay ** epoch), min_shifting_rate)
+    # 指数平滑更新
+    updated = (1 - ema_lambda) * prev + ema_lambda * target
+    # 步长微调
+    new_val = prev + step * (updated - prev)
+    # clip到合理区间
+    new_val = max(clip_min, min(clip_max, new_val))
+    return new_val
 
 ## 计算当前与上期不重复元素间间隔为1的概率
 def cal_not_repeat_rate(limit=limit_line, result_list=None, j_shiftint=1):
@@ -1357,7 +1382,12 @@ if __name__ == "__main__":
                             if err[err_code] > err_nums // err_num_rate:
                                 err_code_max = err_code
                             if err[err_code] > err_nums:
-                                shifting[err_code] += 0.01 if shifting[err_code] * shifting_rate > 0.01 else shifting[err_code] * shifting_rate
+
+                                # 使用自适应阈值更新逻辑
+                                # 目标值可根据实际情况设定，这里假设为cal_shiftings[err_code]
+                                epoch = err[err_code]  # 以当前错误累计次数为迭代轮数
+                                shifting[err_code] = adaptive_threshold_update(
+                                    shifting[err_code], cal_shiftings[err_code], epoch)
 
                                 err[err_code] = 0
                                 for j in range(err_code + 1, len(err)):
@@ -1546,7 +1576,11 @@ if __name__ == "__main__":
                         if err[err_code] > err_nums // err_num_rate:
                             err_code_max = err_code
                         if err[err_code] > err_nums:
-                            shifting[err_code] += 0.01 if shifting[err_code] * shifting_rate > 0.01 else shifting[err_code] * shifting_rate
+
+                            # 使用自适应阈值更新逻辑
+                            epoch = err[err_code]
+                            shifting[err_code] = adaptive_threshold_update(
+                                shifting[err_code], cal_shiftings[err_code], epoch)
 
                             err[err_code] = 0
                             for j in range(err_code + 1, len(err)):
