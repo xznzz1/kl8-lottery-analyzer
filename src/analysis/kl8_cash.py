@@ -7,7 +7,7 @@ import pandas as pd
 import argparse
 
 from tqdm import tqdm
-from ..utils.config import name_path, data_file_name
+from ..config import *
 from itertools import combinations
 from loguru import logger
 
@@ -46,10 +46,9 @@ name = args.name
 nums_index = 0
 cal_nums = int(args.cal_nums)
 if args.download == 1:
-    from ..utils.common import get_data_run
-    get_data_run(cq=0)
-from ..utils.data_fetcher import load_kl8_history
-ori_data = load_kl8_history()
+    from ..common import get_data_run
+    get_data_run(name=name, cq=0)
+ori_data = pd.read_csv("{}{}".format(name_path[name]["path"], data_file_name))
 ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][1:]
 # if args.current_nums >= 0:
 #     index = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0] - (args.current_nums + 1)

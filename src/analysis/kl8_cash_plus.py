@@ -9,58 +9,31 @@ import argparse
 # import threading
 from multiprocessing import Process
 from tqdm import tqdm
-from ..utils.config import name_path, data_file_name
+from ..config import *
 from itertools import combinations
 # from loguru import logger
 # from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def get_args():
-    """获取命令行参数"""
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--name', default="kl8", type=str, help="lottery name")
-    parser.add_argument('--download', default=1, type=int, help="download data")
-    parser.add_argument('--cash_file_name', default="-1", type=str, help='cash_file_name')
-    parser.add_argument('--current_nums', default=-1, type=int, help='current nums')
-    parser.add_argument('--path', default="", type=str, help='path')
-    parser.add_argument('--simple_mode', default=0, type=int, help='simple mode')
-    parser.add_argument('--random_mode', default=0, type=int, help='random mode')
-    parser.add_argument('--cal_nums', default=10, type=int, help='cal_nums')
-    #--------------------------------------------------------------------------------------------------#
-    parser.add_argument('--limit_line', default=0, type=int, help='useless')
-    parser.add_argument('--total_create', default=50, type=int, help='useless')
-    parser.add_argument('--multiple', default=1, type=int, help='useless')
-    parser.add_argument('--multiple_ratio', default="1,0", type=str, help='useless')
-    parser.add_argument('--repeat', default=1, type=int, help='useless')
-    parser.add_argument('--calculate_rate', default=0, type=int, help='useless')
-    parser.add_argument('--calculate_rate_list', default="5", type=str, help='useless')
-    parser.add_argument('--max_workers', default=4, type=int, help='useless')
-    return parser.parse_args()
-
-# 只在作为主程序运行时解析参数
-if __name__ == "__main__":
-    args = get_args()
-else:
-    # 导入时使用默认值
-    class DefaultArgs:
-        def __init__(self):
-            self.name = "kl8"
-            self.download = 1
-            self.cash_file_name = "-1"
-            self.current_nums = -1
-            self.path = ""
-            self.simple_mode = 0
-            self.random_mode = 0
-            self.cal_nums = 10
-            self.limit_line = 0
-            self.total_create = 50
-            self.multiple = 1
-            self.multiple_ratio = "1,0"
-            self.repeat = 1
-            self.calculate_rate = 0
-            self.calculate_rate_list = "5"
-            self.max_workers = 4
-    args = DefaultArgs()
+parser = argparse.ArgumentParser()
+parser.add_argument('--name', default="kl8", type=str, help="lottery name")
+parser.add_argument('--download', default=1, type=int, help="download data")
+parser.add_argument('--cash_file_name', default="-1", type=str, help='cash_file_name')
+parser.add_argument('--current_nums', default=-1, type=int, help='current nums')
+parser.add_argument('--path', default="", type=str, help='path')
+parser.add_argument('--simple_mode', default=0, type=int, help='simple mode')
+parser.add_argument('--random_mode', default=0, type=int, help='random mode')
+parser.add_argument('--cal_nums', default=10, type=int, help='cal_nums')
+#--------------------------------------------------------------------------------------------------#
+parser.add_argument('--limit_line', default=0, type=int, help='useless')
+parser.add_argument('--total_create', default=50, type=int, help='useless')
+parser.add_argument('--multiple', default=1, type=int, help='useless')
+parser.add_argument('--multiple_ratio', default="1,0", type=str, help='useless')
+parser.add_argument('--repeat', default=1, type=int, help='useless')
+parser.add_argument('--calculate_rate', default=0, type=int, help='useless')
+parser.add_argument('--calculate_rate_list', default="5", type=str, help='useless')
+parser.add_argument('--max_workers', default=4, type=int, help='useless')
+args = parser.parse_args()
 
 if args.random_mode == 0:
     if args.path == "":
@@ -78,10 +51,9 @@ nums_index = 0
 cal_nums = int(args.cal_nums)
 content = []
 if args.download == 1:
-    from ..utils.common import get_data_run
-    get_data_run(cq=0)
-from ..utils.data_fetcher import load_kl8_history
-ori_data = load_kl8_history()
+    from ..common import get_data_run
+    get_data_run(name=name, cq=0)
+ori_data = pd.read_csv("{}{}".format(name_path[name]["path"], data_file_name))
 ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][1:]
 # if args.current_nums >= 0:
 #     index = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0] - (args.current_nums + 1)
@@ -253,7 +225,3 @@ if __name__ == "__main__":
         # logger.info("{}, 总投入{}元，总奖金为{}元，返奖率{:.2f}%。".format(args.path, all_cash, all_lucky, all_lucky / all_cash * 100))
         content.append("{}, 总投入{}元，总奖金为{}元，返奖率{:.2f}%。".format(args.path, all_cash, all_lucky, all_lucky / all_cash * 100))
     write_file(content)
-
-if __name__ == "__main__":
-    # 重新解析参数用于主程序运行
-    args = get_args()

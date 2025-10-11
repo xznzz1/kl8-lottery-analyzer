@@ -15,75 +15,43 @@ import os
 from tqdm import tqdm
 from sklearn.cluster import KMeans
 from collections import defaultdict
-from ..utils.config import name_path, data_file_name
+from ..config import *
 from itertools import combinations
 from loguru import logger
 from multiprocessing import Process
 # from concurrent.futures import ThreadPoolExecutor, as_completed
 
-def get_args():
-    """获取命令行参数"""
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--name', default="kl8", type=str, help="lottery name")
-    parser.add_argument('--download', default=1, type=int, help="download data")
-    parser.add_argument('--limit_line', default=50, type=int, help='limit line')
-    parser.add_argument('--total_create', default=50, type=int, help='total create')
-    parser.add_argument('--err_nums', default=1000, type=int, help='err nums')
-    parser.add_argument('--cal_nums', default=10, type=int, help='cal nums')
-    parser.add_argument('--analysis_history', default=1, type=int, help='analysis history')
-    parser.add_argument('--current_nums', default=-1, type=int, help='current nums')
-    parser.add_argument('--check_in_main', default=0, type=int, help='check in main')
-    parser.add_argument('--calculate_rate', default=0, type=int, help='calculate rate')
-    parser.add_argument('--calculate_rate_list', default="5", type=str, help='calculate rate list')
-    parser.add_argument('--multiple', default=1, type=int, help='multiple')
-    parser.add_argument('--multiple_ratio', default="1,0", type=str, help='multiple_ratio')
-    parser.add_argument('--repeat', default=1, type=int, help='repeat') 
-    parser.add_argument('--path', default="", type=str, help='path')
-    parser.add_argument('--simple_mode', default=0, type=int, help='simple mode') 
-    parser.add_argument('--random_mode', default=0, type=int, help='random mode')
-    parser.add_argument('--max_workers', default=4, type=int, help='max_workers')
-    parser.add_argument('--advanced_mode', default=0, type=int, help='advanced algorithm mode: 0=original, 1=genetic+bayesian, 2=full_advanced')
-    return parser.parse_args()
-
-# 只在作为主程序运行时解析参数
-if __name__ == "__main__":
-    args = get_args()
-else:
-    # 导入时使用默认值
-    class DefaultArgs:
-        def __init__(self):
-            self.name = "kl8"
-            self.download = 1
-            self.limit_line = 50
-            self.total_create = 50
-            self.err_nums = 1000
-            self.cal_nums = 10
-            self.analysis_history = 1
-            self.current_nums = -1
-            self.check_in_main = 0
-            self.calculate_rate = 0
-            self.calculate_rate_list = "5"
-            self.multiple = 1
-            self.multiple_ratio = "1,0"
-            self.repeat = 1
-            self.path = ""
-            self.simple_mode = 0
-            self.random_mode = 0
-            self.max_workers = 4
-            self.advanced_mode = 0
-    args = DefaultArgs()
-
+parser = argparse.ArgumentParser()
+parser.add_argument('--name', default="kl8", type=str, help="lottery name")
+parser.add_argument('--download', default=1, type=int, help="download data")
+parser.add_argument('--limit_line', default=50, type=int, help='limit line')
+parser.add_argument('--total_create', default=50, type=int, help='total create')
+parser.add_argument('--err_nums', default=1000, type=int, help='err nums')
+parser.add_argument('--cal_nums', default=10, type=int, help='cal nums')
+parser.add_argument('--analysis_history', default=1, type=int, help='analysis history')
+parser.add_argument('--current_nums', default=-1, type=int, help='current nums')
+parser.add_argument('--check_in_main', default=0, type=int, help='check in main')
+parser.add_argument('--calculate_rate', default=0, type=int, help='calculate rate')
+parser.add_argument('--calculate_rate_list', default="5", type=str, help='calculate rate list')
+parser.add_argument('--multiple', default=1, type=int, help='multiple')
+parser.add_argument('--multiple_ratio', default="1,0", type=str, help='multiple_ratio')
+parser.add_argument('--repeat', default=1, type=int, help='repeat') 
+parser.add_argument('--path', default="", type=str, help='path')
+parser.add_argument('--simple_mode', default=0, type=int, help='simple mode') 
+parser.add_argument('--random_mode', default=0, type=int, help='random mode')
+parser.add_argument('--max_workers', default=4, type=int, help='max_workers')
+parser.add_argument('--advanced_mode', default=0, type=int, help='advanced algorithm mode: 0=original, 1=genetic+bayesian, 2=full_advanced')
 #-------------------------------------------------------------------------------------------------------------#
+args = parser.parse_args()
 
 current_time = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
 name = args.name
 if args.cal_nums < 0:
     args.cal_nums = abs(args.cal_nums) + 1
 if args.download == 1:
-    from ..utils.common import get_data_run
-    get_data_run(cq=0)
-from ..utils.data_fetcher import load_kl8_history
-ori_data = load_kl8_history()
+    from ..common import get_data_run
+    get_data_run(name=name, cq=0)
+ori_data = pd.read_csv("{}{}".format(name_path[name]["path"], data_file_name))
 ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()
 
 if args.current_nums > 0 and args.current_nums >= ori_numpy[-1][0] and args.current_nums <= ori_numpy[0][0]:
@@ -1039,7 +1007,3 @@ if __name__ == "__main__":
             sorted_results, sorted_shiftings = zip(*sorted_results)
             sorted_results = list(sorted_results)
             write_file(sorted_results, "result")
-
-if __name__ == "__main__":
-    # 重新解析参数用于主程序运行
-    args = get_args()

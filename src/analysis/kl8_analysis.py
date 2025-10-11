@@ -14,7 +14,7 @@ import threading
 from tqdm import tqdm
 from sklearn.cluster import KMeans
 from collections import defaultdict
-from ..utils.config import name_path, data_file_name
+from ..config import *
 from itertools import combinations
 from loguru import logger
 
@@ -44,10 +44,9 @@ name = args.name
 if args.cal_nums < 0:
     args.cal_nums = abs(args.cal_nums) + 1
 if args.download == 1:
-    from ..utils.common import get_data_run
-    get_data_run(cq=0)
-from ..utils.data_fetcher import load_kl8_history
-ori_data = load_kl8_history()
+    from ..common import get_data_run
+    get_data_run(name=name, cq=0)
+ori_data = pd.read_csv("{}{}".format(name_path[name]["path"], data_file_name))
 ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()
 
 if args.current_nums > 0 and args.current_nums >= ori_numpy[-1][0] and args.current_nums <= ori_numpy[0][0]:
