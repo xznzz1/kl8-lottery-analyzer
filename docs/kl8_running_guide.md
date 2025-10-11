@@ -18,6 +18,31 @@
 
 ## 使用方法
 
+### ⚠️ 重要资源警示
+`kl8_running.py` 会根据传入的参数列表生成大量并行任务（期号 × cal_nums × total_create 的笛卡尔积）。在普通电脑上，过大的参数组合和过多的并发很容易导致内存不足和系统卡顿。务必从小规模、安全的参数开始，逐步放大，并实时观察资源占用。
+
+建议的安全起步：
+```bash
+python src/analysis/kl8_running.py \
+   --cal_nums_list "5" \
+   --total_create_list "10" \
+   --nums_range "2024268,2024268" \
+   --running_mode 1 \
+   --max_workers 2 \
+   --download 1
+```
+
+逐步扩容策略（一次只调整一个维度）：
+- total_create：10 → 50 → 100
+- cal_nums_list：增加取值数量
+- nums_range：扩大跨度（如单期 → 3期 → 10期）
+- running_mode：先 1 或 2，再 0
+
+常见陷阱：
+- 不要在低内存机器上直接跑大跨度 `--nums_range` + 多值 `--cal_nums_list`/`--total_create_list`
+- 不要把 `--max_workers` 盲目调大；并发过高会放大内存和 I/O 压力
+- 输出目录中文件过多会放大 I/O 卡顿，可定期清理
+
 ### 基本用法
 
 ```bash
@@ -108,6 +133,10 @@ python src/analysis/kl8_running.py \
 - 文件命名：`kl8_runnint_results.txt`
 
 ## 性能优化建议
+### 并发控制（未来方向）
+- 建议将 `kl8_running.py` 的线程管理迁移到 `ThreadPoolExecutor` + 有界队列，限制排队任务数；
+- 分批次下发任务（分段切片 `nums_range`），每批次完成后再推进；
+- 结果写入采用批量/缓冲策略，降低 I/O 抖动。
 
 ### 线程数配置
 - CPU密集型任务：`max_workers = CPU核心数`

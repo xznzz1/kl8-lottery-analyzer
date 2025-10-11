@@ -64,6 +64,39 @@ python src/analysis/kl8_analysis.py --advanced_mode 1 --feature_mode cooccurrenc
 - 仓库随附 `data/kl8/data.csv` 与 `download_meta.json`，方便离线演示；执行 `make download-data` 可获取最新数据。
 
 ## 常见问题
+### ⚠️ 重要风险警示：关于 `src/analysis/kl8_running.py` 的内存占用
+`kl8_running.py` 会按参数列表笛卡尔展开创建大量并行任务（每个期号 × cal_nums × total_create 组合将触发一个独立子进程/线程），在普通个人电脑上极易造成以下风险：
+- 瞬时占用大量内存和文件句柄，出现系统卡顿甚至无响应；
+- 若输出目录中存在大量结果文件，I/O 压力会进一步放大卡顿；
+- 同时运行分析与现金流模式（`--running_mode 0`）会加剧资源竞争。
+
+使用前请务必确认：
+- 充分理解该脚本的工作方式与参数组合的爆炸性；
+- 明确自己设备的 CPU/内存/磁盘能力是否足够支撑；
+- 从安全的最小参数开始，逐步调大，观察资源监控（任务管理器/Activity Monitor）。
+
+安全参数建议（入门稳妥值，可逐步上调）：
+```bash
+# 仅分析模式，单期测试
+python src/analysis/kl8_running.py \
+  --cal_nums_list "5" \
+  --total_create_list "10" \
+  --nums_range "2024268,2024268" \
+  --running_mode 1 \
+  --max_workers 2 \
+  --download 1
+
+# 扩容时按顺序逐步调整（建议一次只改一个维度）
+# 1) 先提高 total_create 到 50，再到 100
+# 2) 再增加 cal_nums_list 的取值个数
+# 3) 最后再扩 nums_range 的跨度
+```
+
+陷阱规避：
+- 不要在低内存设备上直接使用大跨度 `--nums_range` 与多值的 `--cal_nums_list`/`--total_create_list`；
+- 不要盲目把 `--max_workers` 调到很大；不是越大越快，易造成上下文切换和内存压力；
+- 推荐先在 `--running_mode 1` 或 `2` 单独验证，再切换到 `0`。
+
 1. **提示找不到数据文件？**  
    执行 `make setup` 创建目录，再运行 `make download-data`。如仍失败，请检查抓取域名是否可访问。
 2. **如何启用高级算法与特征增强？**  
