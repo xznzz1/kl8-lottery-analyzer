@@ -613,7 +613,7 @@ def check_rate(result_list):
 ## 判断文件夹是否存在，不存在就创建
 def check_dir(path):
     if not os.path.exists(path):
-        os.makedirs(path)
+        os.makedirs(path, exist_ok=True)
 
 ## 多线程调用写入文件
 def write_file(lst,file_name="result"):

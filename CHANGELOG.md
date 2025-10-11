@@ -1,6 +1,21 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [1.2.1] - 2025-10-11 🔧 Running脚本与自适应阈值优化
+### Fixed
+- **kl8_running.py 多线程下载问题**：统一在主线程下载数据，避免并发冲突
+- **目录创建竞争条件**：修复 `os.makedirs` 使用 `exist_ok=True` 参数
+- **文件路径问题**：使用绝对路径定位 plus 版本脚本文件
+- **自适应阈值精度**：完全移除 `shifting_rate` 依赖，使用递减步长+指数平滑逻辑
+
+### Changed
+- `kl8_running.py` 新增 `--download` 参数控制数据下载行为
+- `adaptive_threshold_update` 函数使用衰减步长、指数移动平均和数值裁剪
+- 移除所有 `shifting[err_code] += ...shifting_rate...` 的硬编码逻辑
+
+### Documentation
+- 更新 `kl8_running.py` 的使用说明和参数解释
+
 ## [1.2.0] - 2025-10-12 特征增强引擎
 ### Added
 - 新增 `src/analysis/feature_enhancer.py`，提供近期动量与共现谱的混合评分。
