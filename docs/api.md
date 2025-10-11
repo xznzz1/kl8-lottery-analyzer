@@ -10,9 +10,18 @@
 | `src.data_fetcher` | `download_history(code, start=None, end=None, use_sequence_order=False, client=None)` | 彩票代号、期号区间、顺序模式、HTTP 客户端 | `DownloadResult` | 带重试和白名单校验的抓取实现。 |
 | `src.data_fetcher` | `get_current_issue(code, client=None)` | 彩票代号、可选 HTTP 客户端 | `str` | 获取官网最新期号。 |
 | `src.data_fetcher` | `load_history(code)` | 彩票代号 | `pandas.DataFrame` | 与 `common.load_history` 等价，直接暴露底层能力。 |
-| `src.analysis.feature_enhancer` | `compute_enhanced_scores(draws, limit, recent_window=40, reference_window=160, decay=0.97, weights=(0.45,0.25,0.30))` | 历史开奖二维数组、统计范围、窗口、衰减、权重 | `(List[Tuple[int, float]], FeatureDebugInfo)` | 计算混合得分并返回排序结果与调试信息；支持 `--feature_mode`。 |
+| `src.analysis.feature_enhancer` | `compute_enhanced_scores(draws, limit, recent_window=40, reference_window=160, decay=0.97, weights=(0.45,0.25,0.30), pca_components=1, use_pca=True)` | 历史开奖二维数组、统计范围、窗口、衰减、权重 | `(List[Tuple[int, float]], FeatureDebugInfo)` | 新增PCA主成分特征，自动融合全局主成分得分，提升特征表达能力。 |
 | `src.analysis.feature_enhancer` | `compute_recency_and_momentum_scores(draws, limit, recent_window=40, reference_window=160)` | 历史开奖二维数组、窗口设置 | `(np.ndarray, np.ndarray)` | 分别返回近期频率得分与动量得分。 |
 | `src.analysis.feature_enhancer` | `compute_co_occurrence_scores(draws, limit, decay=0.97)` | 历史开奖二维数组、统计范围、衰减因子 | `np.ndarray` | 通过共现矩阵的主特征向量衡量号码中心性。 |
+
+#### PCA主成分特征用法
+```python
+from src.analysis.feature_enhancer import compute_enhanced_scores
+ranked, debug = compute_enhanced_scores(draws, limit=100, use_pca=True, pca_components=1)
+```
+- `use_pca`: 是否启用PCA特征（默认True）
+- `pca_components`: 主成分数量，通常取1即可
+- 返回结果已自动融合PCA特征，无需手动拼接
 
 ## Plus 版本并行接口
 

@@ -85,3 +85,13 @@ python src/analysis/kl8_analysis.py --advanced_mode 1 --feature_mode cooccurrenc
 - 新增接口或配置时同步更新 `docs/api.md`、`docs/architecture.md`，并补充测试。
 - 如果未来扩展到其他彩票玩法，请在 `docs/decision_record.md` 记录设计取舍，`ASSUMPTIONS.md` 说明边界条件。
 - 若需恢复模型训练能力，可在独立分支重建 pipeline，再合并到主线。
+
+## 亮点
+- 🔄 全新特征增强引擎，支持动量、共现谱、PCA主成分等多种特征融合
+- 📊 原始版与 Plus 版分析脚本，支持多线程与高级算法
+- 🧪 完善的测试覆盖与 CI/CD 流程
+- 📚 详尽的文档与使用示例
+
+## 更新记录
+- **v1.1.0**：新增特征融合选项，优化数据下载脚本
+- **v1.0.0**：初始发布，包含基本数据下载与分析功能

@@ -1,3 +1,10 @@
+
+from __future__ import annotations
+from typing import Optional
+try:
+    from sklearn.decomposition import PCA
+except ImportError:
+    PCA = None
 # -*- coding: utf-8 -*-
 """
 特征增强工具集。
@@ -12,8 +19,6 @@
 - 提升号码挑选阶段的特征维度；
 - 提供结构化的调试信息，便于在日志中输出。
 """
-
-from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Sequence, Tuple
@@ -147,6 +152,8 @@ def compute_enhanced_scores(
     reference_window: int = 160,
     decay: float = 0.97,
     weights: Tuple[float, float, float] = (0.45, 0.25, 0.30),
+    pca_components: int = 1,
+    use_pca: bool = True,
 ) -> Tuple[List[Tuple[Number, Score]], FeatureDebugInfo]:
     """
     汇总多源特征，返回排序后的号码得分列表与调试信息。
@@ -168,11 +175,43 @@ def compute_enhanced_scores(
         decay=decay,
     )
 
+    # PCA主成分特征提取
+    pca_scores = np.zeros(81, dtype=float)
+    if use_pca and PCA is not None:
+        # 构造80维号码出现频率矩阵（每期一行，每列为号码出现与否）
+        numbers_matrix = np.zeros((min(limit, draws.shape[0]), 80), dtype=float)
+        for idx, row in enumerate(draws[:min(limit, draws.shape[0])]):
+            nums = set(_extract_numbers(row))
+            for n in range(1, 81):
+                if n in nums:
+                    numbers_matrix[idx, n-1] = 1.0
+        try:
+            pca = PCA(n_components=pca_components)
+            pca_result = pca.fit_transform(numbers_matrix)
+            # 取第一主成分的投影，归一化到0-1
+            if pca_components == 1:
+                pc1 = pca.components_[0]
+                pc1_norm = (pc1 - pc1.min()) / (pc1.max() - pc1.min() + 1e-9)
+                for n in range(1, 81):
+                    pca_scores[n] = float(pc1_norm[n-1])
+            else:
+                # 多主成分时，取加权和
+                pc_sum = np.sum(np.abs(pca.components_), axis=0)
+                pc_sum_norm = (pc_sum - pc_sum.min()) / (pc_sum.max() - pc_sum.min() + 1e-9)
+                for n in range(1, 81):
+                    pca_scores[n] = float(pc_sum_norm[n-1])
+        except Exception as e:
+            # PCA失败则全零
+            pca_scores = np.zeros(81, dtype=float)
+
+    # 新增PCA特征权重
     w_recency, w_momentum, w_co = weights
+    w_pca = 0.18  # 可调节
     combined = (
         w_recency * recency_scores
         + w_momentum * momentum_scores
         + w_co * co_occurrence_scores
+        + w_pca * pca_scores
     )
 
     ranked = sorted(
