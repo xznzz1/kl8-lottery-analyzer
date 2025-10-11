@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import random
 from typing import Iterator
@@ -10,7 +11,9 @@ from src import config as project_config
 
 @pytest.fixture(autouse=True)
 def isolate_paths(tmp_path) -> Iterator[None]:
-    """将数据/模型等输出目录重定向到临时路径，保证测试隔离。"""
+    """
+    将配置中的输出目录指向临时目录，保证测试互不干扰。
+    """
 
     original_paths = project_config.PATHS.copy()
     original_name_path = project_config.name_path.copy()
@@ -36,13 +39,11 @@ def isolate_paths(tmp_path) -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def set_random_seed() -> None:
+    """
+    固定随机种子，确保测试结果稳定。
+    """
+
     seed = 42
     random.seed(seed)
     np.random.seed(seed)
-    try:
-        import tensorflow as tf  # type: ignore
-
-        tf.random.set_seed(seed)
-    except Exception:
-        pass
-    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    os.environ.setdefault("PYTHONHASHSEED", str(seed))

@@ -1,41 +1,57 @@
 # -*- coding: utf-8 -*-
 """
-数据分析示例
+快乐 8 历史数据高频号码统计示例。
 
-展示如何使用数据分析功能分析彩票数据
-
-Author: KittenCN
+步骤：
+1. 读取仓库提供的 `data/kl8/data.csv`；
+2. 统计号码出现频次；
+3. 输出前 10 个高频号码。
 """
+
+from __future__ import annotations
+
 import sys
-import os
+from pathlib import Path
 
-# 添加src目录到Python路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+import pandas as pd
 
-from src.analysis import BasicAnalysis
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.common import load_history  # noqa: E402
 
 
-def analysis_example():
-    """数据分析示例"""
-    print("=== 彩票数据分析示例 ===")
-    
-    # 示例数据
-    sample_data = [
-        [1, 5, 12, 23, 34, 45, 67, 78, 80, 77, 66, 55, 44, 33, 22, 11, 2, 3, 4, 6],
-        [2, 8, 15, 29, 38, 47, 59, 68, 79, 71, 62, 53, 42, 31, 28, 17, 9, 7, 13, 19],
-        [3, 11, 18, 27, 36, 49, 58, 69, 72, 64, 56, 48, 39, 21, 14, 26, 35, 41, 52, 63]
-    ]
-    
-    print("示例数据分析结果:")
+def analysis_example(top_n: int = 10) -> pd.Series:
+    """
+    计算历史开奖数据中出现频率最高的号码。
+
+    参数：
+        top_n: 返回的高频号码数量。
+    返回：
+        `pandas.Series`，索引为号码，值为出现次数。
+    """
+
+    df = load_history("kl8")
+    number_columns = [col for col in df.columns if col.startswith("红球_")]
+    flattened = pd.Series(df[number_columns].values.ravel()).astype(int)
+    counts = flattened.value_counts().sort_values(ascending=False)
+    return counts.head(top_n)
+
+
+def main() -> None:
+    print("=== 快乐 8 高频号码统计示例 ===")
     try:
-        datacnt, dataori = BasicAnalysis(sample_data)
-        print(f"\n分析完成，共分析 {len(sample_data)} 组数据")
-        print("出现频率统计已显示在上方")
-    except Exception as e:
-        print(f"分析失败: {e}")
-    
-    print("\n=== 示例完成 ===")
+        top_numbers = analysis_example()
+    except FileNotFoundError as exc:
+        data_hint = (PROJECT_ROOT / "data" / "kl8" / "data.csv").resolve()
+        print(f"数据不存在：{exc}。请先执行 `make download-data` 或准备 {data_hint}")
+        return
+
+    for idx, (number, freq) in enumerate(top_numbers.items(), start=1):
+        print(f"{idx:02d}. 号码 {number:02d} -> 出现 {freq} 次")
+    print("=== 示例结束 ===")
 
 
 if __name__ == "__main__":
-    analysis_example()
+    main()

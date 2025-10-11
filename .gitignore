@@ -129,7 +129,7 @@ dmypy.json
 .pyre/
 
 # KL8 specific
-data/
+data/*
 results/
 logs/
 *.csv
@@ -137,6 +137,10 @@ logs/
 models/
 cache/
 temp/
+!data/kl8/
+data/kl8/*
+!data/kl8/data.csv
+!data/kl8/download_meta.json
 
 # IDE
 .vscode/

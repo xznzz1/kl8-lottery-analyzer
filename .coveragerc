@@ -1,0 +1,6 @@
+[run]
+omit =
+    src/analysis/*
+
+[report]
+show_missing = True

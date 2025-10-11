@@ -1,15 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-彩票AI预测系统核心模块
+KL8 (快乐8) 数据分析工具集。
 
-该模块包含了彩票AI预测系统的核心功能，包括：
-- 数据获取和处理
-- 模型训练和预测
-- 数据分析工具
-- 配置管理
-
-Author: KittenCN
+当前仓库聚焦于：
+- 历史数据下载与加载 (`src.data_fetcher`)
+- 顶层脚本共享接口 (`src.common`)
+- 多种分析/回测脚本 (`src.analysis` 包)
 """
-
-__version__ = "3.0.0"
-__author__ = "KittenCN"
+from .config import *
+from . import common
+__all__ = ["analysis", "common", "config", "data_fetcher"]

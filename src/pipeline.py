@@ -1,273 +1,238 @@
-# -*- coding: utf-8 -*-
+# -*- coding:utf-8 -*-
 """
-训练与预测流程封装。
-
-暴露的核心函数：
-- train_lottery_models：基于历史数据训练模型并写入本地；
-- load_trained_models：从磁盘加载已训练模型；
-- predict_next_draw：使用最新窗口数据给出预测结果。
+Lightweight pipeline wrapper to encapsulate common operations and reduce global state usage.
+This is intentionally non-intrusive and uses existing functions in src.common and src.modeling.
 """
+from typing import Optional, Dict, Any
+import os
+import torch
+import threading
+from src import common as _common
 
-from __future__ import annotations
+import pandas as pd
+from src.config import name_path, data_file_name, data_cq_file_name
 
-import json
-from dataclasses import asdict, dataclass
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, Optional, Tuple
-
-import numpy as np
-import tensorflow as tf
-from loguru import logger
-
-from .config import (
-    DATA_FILE_NAME,
-    MODEL_METADATA_FILE,
-    PATHS,
-    LotteryModelConfig,
-    ensure_runtime_directories,
-    get_lottery_config,
-)
-from .data_fetcher import load_history
-from .modeling import build_models_for_lottery
-from .preprocessing import ComponentDataset, prepare_training_arrays, train_validation_split
+# bring into this module names used by older code paths
+model_args = _common.model_args
+model_path = _common.model_path
+ball_name = _common.ball_name
+modeling = _common.modeling
+from src import modeling
+from .common import init, create_train_data
+from .common import run_predict as common_run_predict, predict_ball_model as common_predict_ball_model
 
 
-@dataclass
-class ComponentTrainingSummary:
-    train_samples: int
-    val_samples: int
-    best_val_loss: Optional[float]
-    best_val_metric: Optional[float]
-    epochs_trained: int
+class LotteryPipeline:
+    """A small pipeline helper to group common operations.
+
+    Responsibilities (minimal, non-destructive):
+    - reset module-level globals via `init()`
+    - hold args for convenience via `set_args`
+    - create dataset with consistent handling of modeling.extra_classes
+    - save/load checkpoint helpers that include extra_classes metadata
+    """
+
+    def __init__(self, args: Optional[Any] = None):
+        self.args = args
+        # ensure globals reset on creation
+        init()
+        # cache raw dataframes keyed by (name, cq)
+        # cache format: key -> { 'df': DataFrame, 'ts': float }
+        self._ori_data = {}
+        # per-key lock to avoid thundering herd
+        import threading
+        self._ori_locks = {}
+        # default TTL for cached ori_data (seconds) - can be overridden via config
+        try:
+            from src.config import ORI_DATA_TTL
+            self._ori_ttl = int(ORI_DATA_TTL)
+        except Exception:
+            self._ori_ttl = 300
+
+    def set_args(self, args: Any):
+        self.args = args
+
+    def reset(self):
+        init()
+        # clear cached original data
+        self._ori_data.clear()
+
+    def get_ori_data(self, name: str, cq: int = 0, seq_len: int | None = None, refresh: bool = False):
+        """Return the original DataFrame for `name` (cached). If not cached, load from disk.
+
+        seq_len: optional, if provided and >0, return only the first seq_len rows.
+        refresh: if True, force reloading from disk even if cached and TTL not expired.
+        """
+        key = (name, int(cq))
+        import time
+        now = time.time()
+        entry = self._ori_data.get(key)
+        # create per-key lock lazily
+        if key not in self._ori_locks:
+            self._ori_locks[key] = threading.Lock()
+
+        with self._ori_locks[key]:
+            entry = self._ori_data.get(key)
+            expired = True
+            if entry is not None and not refresh:
+                ts = entry.get('ts', 0)
+                expired = (now - ts) > self._ori_ttl
+            if entry is None or expired or refresh:
+                syspath = name_path[name]["path"]
+                if int(cq) == 1 and name == "kl8":
+                    df = pd.read_csv(f"{syspath}{data_cq_file_name}")
+                else:
+                    df = pd.read_csv(f"{syspath}{data_file_name}")
+                self._ori_data[key] = {'df': df, 'ts': now}
+            entry = self._ori_data[key]
+        df = entry['df']
+        if seq_len is not None and seq_len > 0:
+            return df.head(seq_len)
+        return df
+
+    def create_dataset(self, name: str, windows: int, dataset=1, ball_type="red", cq=0, test_flag=0, test_begin=0, f_data=0, model="Transformer", num_classes=80, test_list=[]):
+        """Create and return a modeling.MyDataset instance using create_train_data.
+        This call will update modeling.extra_classes as a side-effect (same as existing codepath).
+        """
+        ds = create_train_data(name=name, windows=windows, dataset=dataset, ball_type=ball_type, cq=cq, test_flag=test_flag, test_begin=test_begin, f_data=f_data, model=model, num_classes=num_classes, test_list=test_list)
+        return ds
+
+    def save_checkpoint(self, path: str, model: torch.nn.Module, optimizer: torch.optim.Optimizer = None, lr_scheduler=None, scaler=None, epoch:int = 0, extra: Dict[str,Any]=None):
+        sd = {
+            'model_state_dict': model.state_dict(),
+            'epoch': epoch,
+            'extra_classes': modeling.extra_classes,
+        }
+        if optimizer is not None:
+            sd['optimizer_state_dict'] = optimizer.state_dict()
+        if lr_scheduler is not None:
+            try:
+                sd['scheduler_state_dict'] = lr_scheduler.state_dict()
+            except Exception:
+                pass
+        if scaler is not None:
+            try:
+                sd['scaler_state_dict'] = scaler.state_dict()
+            except Exception:
+                pass
+        if extra:
+            sd.update(extra)
+        torch.save(sd, path)
+
+    def load_checkpoint(self, path: str, map_location='cpu') -> Dict[str, Any]:
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        ck = torch.load(path, map_location=map_location)
+        if 'extra_classes' in ck:
+            try:
+                modeling.extra_classes = int(ck['extra_classes'])
+            except Exception:
+                pass
+        return ck
+
+    def run_predict(self, window_size, hidden_size=128, num_layers=8, num_heads=16, f_data=0, model="Transformer", test_mode=0):
+        """Wrapper that calls common.run_predict using the pipeline's args.
+
+        This keeps backward compatibility while centralizing args injection.
+        """
+        if self.args is None:
+            raise ValueError("Pipeline.args is not set. Call set_args(args) first.")
+        # delegate to common implementation, passing self.args
+        return common_run_predict(window_size=window_size,
+                                  hidden_size=hidden_size,
+                                  num_layers=num_layers,
+                                  num_heads=num_heads,
+                                  f_data=f_data,
+                                  model=model,
+                                  args=self.args,
+                                  test_mode=test_mode)
+
+    def predict_ball_model(self, name, dataset, num_classes, sub_name="红球", window_size=1, hidden_size=128, num_layers=8, num_heads=16, input_size=20, output_size=20, model_name="Transformer", device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"), embedding_dim=50):
+        """Delegate wrapper for predict_ball_model that injects pipeline args if available."""
+        args = self.args if self.args is not None else None
+        # If pipeline has args set, run an internal implementation that avoids global mini_args
+        use_args = args
+        # replicate the logic from src.common.predict_ball_model but using self.args
+        from torch.utils.data import DataLoader
+        sub_name_eng = "red" if sub_name == "红球" else "blue"
+        m_args = model_args[name]
+        ball_index = 0 if sub_name == "红球" else 1
+        name_list = [(ball_name[ball_index], i + 1) for i in range(num_classes)]
+        if use_args is None:
+            raise ValueError("predict_ball_model requires args to be set on the pipeline or passed in")
+        syspath = model_path + model_args[use_args.name]["pathname"]['name'] + str(window_size) + model_args[use_args.name]["subpath"][sub_name_eng]
+        if not os.path.exists(syspath):
+            os.makedirs(syspath)
+
+        dataset = [dataset[0]]
+        dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+
+        if model_name == "Transformer":
+            _model = modeling.Transformer_Model
+        elif model_name == "LSTM":
+            _model = modeling.LSTM_Model
+        else:
+            raise ValueError(f"暂不支持的模型类型: {model_name}")
+
+        checkpoint_path = f"{syspath}{sub_name_eng}_ball_model_pytorch_{model_name}.ckpt"
+        input_dim = input_size
+
+        def build_model():
+            use = use_args
+            if model_name == "Transformer":
+                return _model(input_size=input_dim,
+                              output_size=output_size,
+                              hidden_size=use.hidden_size,
+                              num_layers=use.num_layers,
+                              num_heads=use.num_heads,
+                              dropout=0.5,
+                              num_embeddings=m_args["model_args"]["{}_n_class".format(sub_name_eng)],
+                              embedding_dim=embedding_dim,
+                              seq_len=int(use.seq_len)).to(device)
+            return _model(input_size=input_dim,
+                          output_size=output_size,
+                          hidden_size=use.hidden_size,
+                          num_layers=use.num_layers,
+                          num_heads=use.num_heads,
+                          dropout=0.5,
+                          num_embeddings=m_args["model_args"]["{}_n_class".format(sub_name_eng)],
+                          embedding_dim=embedding_dim,
+                          seq_len=int(use.seq_len)).to(device)
+
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            if 'extra_classes' in checkpoint:
+                try:
+                    modeling.extra_classes = int(checkpoint['extra_classes'])
+                except Exception:
+                    pass
+            if use_args is not None and {'seq_len', 'hidden_size', 'num_layers', 'num_heads'}.issubset(checkpoint.keys()):
+                if checkpoint['seq_len'] != use_args.seq_len or checkpoint['hidden_size'] != use_args.hidden_size or checkpoint['num_layers'] != use_args.num_layers or checkpoint['num_heads'] != use_args.num_heads:
+                    try:
+                        use_args.seq_len = checkpoint['seq_len']
+                        use_args.hidden_size = checkpoint['hidden_size']
+                        use_args.num_layers = checkpoint['num_layers']
+                        use_args.num_heads = checkpoint['num_heads']
+                    except Exception:
+                        pass
+            model = build_model()
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model = build_model()
+
+        model.eval()
+        y_pred_cpu = None
+        y_target_cpu = None
+        for batch in dataloader:
+            x, y = batch
+            x = x.float().to(device)
+            y_pred = model(x)
+            y_pred_cpu = y_pred.detach().cpu()
+            y_target_cpu = y.detach().cpu()
+        return y_pred_cpu, name_list, y_target_cpu
 
 
-@dataclass
-class TrainingSummary:
-    code: str
-    name: str
-    window_size: int
-    trained_on_issues: Tuple[str, str]
-    components: Dict[str, ComponentTrainingSummary]
-    timestamp: str
-
-
-def _ensure_enough_samples(dataset: ComponentDataset, window_size: int, name: str) -> None:
-    if dataset.features.shape[0] == 0:
-        raise ValueError(
-            f"{name} 可用数据不足，窗口大小 {window_size} 生成的样本数为 0，请增加历史期数或减小窗口。"
-        )
-
-
-def _build_tf_dataset(
-    features: np.ndarray,
-    labels: np.ndarray,
-    batch_size: int,
-    shuffle: bool,
-) -> tf.data.Dataset:
-    ds = tf.data.Dataset.from_tensor_slices((features, labels))
-    if shuffle:
-        buffer = min(len(features), max(batch_size * 4, 256))
-        ds = ds.shuffle(buffer)
-    return ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
-
-def _denormalize(pred: np.ndarray, spec_classes: int) -> np.ndarray:
-    if pred.min() < 0:
-        raise ValueError("预测结果包含负数，可能是模型输出异常")
-    return pred + 1
-
-
-def _get_latest_window(arr: np.ndarray, window_size: int) -> np.ndarray:
-    if arr.shape[0] < window_size:
-        raise ValueError(f"历史数据不足，无法获取 {window_size} 条窗口序列")
-    return arr[-window_size:]
-
-
-def train_lottery_models(
-    code: str,
-    window_size: Optional[int] = None,
-    batch_size: Optional[int] = None,
-    red_epochs: Optional[int] = None,
-    blue_epochs: Optional[int] = None,
-    validation_ratio: float = 0.15,
-) -> TrainingSummary:
-    """训练指定彩票模型，并返回训练摘要。"""
-
-    ensure_runtime_directories()
-    cfg: LotteryModelConfig = get_lottery_config(code)
-    df = load_history(cfg.code)
-    window = window_size or cfg.default_window
-    arrays = prepare_training_arrays(df, cfg, window)
-    summary_components: Dict[str, ComponentTrainingSummary] = {}
-
-    models = build_models_for_lottery(cfg, window)
-    save_dir = PATHS["model"] / cfg.code / f"window_{window}"
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    first_issue = str(df["期数"].min())
-    last_issue = str(df["期数"].max())
-
-    for component, model in models.items():
-        dataset = arrays[component]
-        _ensure_enough_samples(dataset, window, f"{cfg.name}-{component}")
-        (x_train, y_train), (x_val, y_val) = train_validation_split(
-            dataset.features, dataset.labels, validation_ratio=validation_ratio
-        )
-        effective_batch = max(1, min(batch_size or cfg.default_batch_size, x_train.shape[0]))
-        train_ds = _build_tf_dataset(x_train, y_train, effective_batch, shuffle=True)
-        val_ds = None
-        if x_val.shape[0] > 0:
-            val_ds = _build_tf_dataset(x_val, y_val, effective_batch, shuffle=False)
-
-        callbacks = [
-            tf.keras.callbacks.EarlyStopping(
-                monitor="val_loss",
-                patience=8,
-                restore_best_weights=True,
-                verbose=1,
-            ),
-            tf.keras.callbacks.ReduceLROnPlateau(
-                monitor="val_loss",
-                factor=0.5,
-                patience=4,
-                min_lr=1e-6,
-                verbose=1,
-            ),
-        ]
-        if val_ds is None:
-            callbacks = []
-
-        epochs = red_epochs if component == "red" else blue_epochs
-        if epochs is None:
-            epochs = cfg.default_red_epochs if component == "red" else cfg.default_blue_epochs
-        epochs = max(1, epochs)
-
-        logger.info(
-            "训练模型 {}-{}: 样本={}，验证集={}，窗口={}，批大小={}，轮数={}",
-            cfg.code,
-            component,
-            dataset.features.shape[0],
-            x_val.shape[0],
-            window,
-            effective_batch,
-            epochs,
-        )
-
-        history = model.fit(
-            train_ds,
-            validation_data=val_ds,
-            epochs=epochs,
-            verbose=2,
-            callbacks=callbacks,
-        )
-
-        model_path = save_dir / f"{component}.keras"
-        model.save(model_path, overwrite=True)
-        logger.success("模型已保存至 {}", model_path)
-
-        best_loss = min(history.history.get("val_loss", history.history.get("loss", [None])))
-        metric_key = None
-        for candidate in ("val_accuracy", "val_sparse_categorical_accuracy", "accuracy"):
-            if candidate in history.history:
-                metric_key = candidate
-                break
-        best_metric = None
-        if metric_key is not None:
-            best_metric = max(history.history[metric_key])
-        summary_components[component] = ComponentTrainingSummary(
-            train_samples=int(x_train.shape[0]),
-            val_samples=int(x_val.shape[0]),
-            best_val_loss=float(best_loss) if best_loss is not None else None,
-            best_val_metric=float(best_metric) if best_metric is not None else None,
-            epochs_trained=len(history.history.get("loss", [])),
-        )
-
-    metadata = TrainingSummary(
-        code=cfg.code,
-        name=cfg.name,
-        window_size=window,
-        trained_on_issues=(first_issue, last_issue),
-        components=summary_components,
-        timestamp=datetime.utcnow().isoformat(),
-    )
-    metadata_path = save_dir / MODEL_METADATA_FILE
-    metadata_path.write_text(
-        json.dumps(
-            {
-                **asdict(metadata),
-                "components": {key: asdict(value) for key, value in summary_components.items()},
-                "data_file": str(PATHS["data"] / cfg.code / DATA_FILE_NAME),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    logger.success("训练摘要已写入 {}", metadata_path)
-    return metadata
-
-
-def load_trained_models(code: str, window_size: Optional[int] = None) -> Dict[str, tf.keras.Model]:
-    """从磁盘加载训练好的模型。"""
-
-    cfg = get_lottery_config(code)
-    window = window_size or cfg.default_window
-    directory = PATHS["model"] / cfg.code / f"window_{window}"
-    if not directory.exists():
-        raise FileNotFoundError(f"未找到已训练的模型目录: {directory}")
-
-    models: Dict[str, tf.keras.Model] = {}
-
-    for component in ("red", "blue"):
-        model_path = directory / f"{component}.keras"
-        if model_path.exists():
-            models[component] = tf.keras.models.load_model(
-                model_path,
-                compile=True,
-                safe_mode=False,
-            )
-            logger.info("载入模型 {}", model_path)
-    if not models:
-        raise FileNotFoundError(f"{directory} 下未找到 red/blue 模型文件")
-    return models
-
-
-def predict_next_draw(
-    code: str,
-    window_size: Optional[int] = None,
-) -> Dict[str, np.ndarray]:
-    """使用最新模型预测下一期开奖号码。"""
-
-    cfg = get_lottery_config(code)
-    window = window_size or cfg.default_window
-    df = load_history(cfg.code)
-    arrays = prepare_training_arrays(df, cfg, window)
-    models = load_trained_models(cfg.code, window)
-
-    predictions: Dict[str, np.ndarray] = {}
-
-    # 最新窗口特征取 prepare_training_arrays 中的原始数组最后 window 条
-    red_dataset = arrays["red"]
-    latest_features = _get_latest_window(red_dataset.features, 1).reshape(1, window, cfg.red.sequence_len)
-    red_model = models["red"]
-    red_pred = red_model.predict(latest_features, verbose=0)
-    predictions["red"] = np.argmax(red_pred, axis=-1).squeeze(axis=0).astype(int)
-
-    if cfg.blue and "blue" in models:
-        blue_dataset = arrays["blue"]
-        latest_blue = _get_latest_window(blue_dataset.features, 1).reshape(1, window, cfg.blue.sequence_len)
-        blue_pred_raw = models["blue"].predict(latest_blue, verbose=0)
-        predictions["blue"] = np.argmax(blue_pred_raw, axis=-1).squeeze(axis=0).astype(int)
-
-    # 将预测结果转换回原始编号（0-based -> 1-based）
-    if red_dataset.needs_offset:
-        predictions["red"] = _denormalize(predictions["red"], cfg.red.num_classes)
-    if "blue" in predictions:
-        blue_dataset = arrays["blue"]
-        if blue_dataset.needs_offset:
-            predictions["blue"] = _denormalize(predictions["blue"], cfg.blue.num_classes)
-    return predictions
-
-
-__all__ = ["train_lottery_models", "load_trained_models", "predict_next_draw", "TrainingSummary"]
+# Default singleton pipeline for backwards compatible global-style usage.
+# Code elsewhere (legacy helpers) may call setMiniargs or expect a global context;
+# setting args on DEFAULT_PIPELINE keeps behaviour consistent while centralizing state.
+DEFAULT_PIPELINE = LotteryPipeline()

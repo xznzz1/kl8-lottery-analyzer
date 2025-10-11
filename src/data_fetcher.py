@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-数据抓取模块，负责从 500.com 拉取彩票历史数据并保存到本地。
+快乐 8 历史数据抓取与加载工具（精简版）。
 
-特点：
-1. 使用带重试的 requests.Session，满足网络安全要求；
-2. 输出 Pandas DataFrame，供预处理与训练使用；
-3. 针对快乐8（kl8）提供顺序版与常规版两种下载模式。
+相较于原仓库，该版本仅保留快乐 8（kl8）相关逻辑，负责：
+1. 带重试的 HTTP 抓取；
+2. HTML / 文本解析为 pandas.DataFrame；
+3. 将数据保存到 `data/kl8/data.csv` 并生成下载元信息。
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Iterable, Optional
+from datetime import datetime, timezone
+from typing import Optional
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -36,7 +36,7 @@ from .config import (
 
 @dataclass
 class DownloadResult:
-    """描述一次下载操作的元信息。"""
+    """记录一次快乐 8 历史数据下载的结果。"""
 
     code: str
     total_issues: int
@@ -45,7 +45,7 @@ class DownloadResult:
 
 
 class LotteryHttpClient:
-    """封装网络访问逻辑，提供带重试与域名校验的 GET 方法。"""
+    """封装带重试和域名白名单校验的 HTTP 客户端。"""
 
     def __init__(
         self,
@@ -60,7 +60,7 @@ class LotteryHttpClient:
             total=retries,
             backoff_factor=backoff_factor,
             status_forcelist=(429, 500, 502, 503, 504),
-            allowed_methods=frozenset(["GET"]),
+            allowed_methods=frozenset({"GET"}),
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self._session.mount("https://", adapter)
@@ -75,7 +75,7 @@ class LotteryHttpClient:
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
         if all(allowed not in domain for allowed in ALLOWED_DOMAINS):
-            raise ValueError(f"禁止访问域名: {domain}")
+            raise ValueError(f"禁止访问域名：{domain}")
         response = self._session.get(url, headers=self._headers, timeout=self._timeout)
         response.raise_for_status()
         response.encoding = "utf-8"
@@ -83,94 +83,74 @@ class LotteryHttpClient:
 
 
 def _build_history_url(config: LotteryModelConfig, start: Optional[int], end: Optional[int]) -> str:
+    """构造快乐 8 历史记录页面地址。"""
+
     base = f"https://datachart.500.com/{config.code}/history/"
-    if config.code in {"qxc", "pls", "sd"}:
-        path = "inc/history.php"
-    elif config.code == "kl8":
-        path = "newinc/jbzs_redblue.php"
-    else:
-        path = "history.shtml"
-
-    if path.endswith(".shtml"):
-        return f"{base}{path}"
-
     start_issue = start or 1
-    end_issue = end or 999999
+    end_issue = end or 999_999
     limit = end_issue - start_issue + 1
-    query = f"{path}?start={start_issue}&end={end_issue}&limit={limit}"
-    return f"{base}{query}"
+    return f"{base}newinc/jbzs_redblue.php?start={start_issue}&end={end_issue}&limit={limit}"
 
 
 def _parse_issue_list(config: LotteryModelConfig, html: str) -> pd.DataFrame:
-    soup = BeautifulSoup(html, "lxml")
-    rows = []
-    if config.code in {"ssq", "dlt", "kl8"}:
-        tbody = soup.find("tbody", attrs={"id": "tdata"})
-        if not tbody:
-            raise ValueError("未找到开奖号码数据表格 (id=tdata)")
-        trs = tbody.find_all("tr")
-    else:
-        table = soup.find("table", id="tablelist")
-        if not table:
-            raise ValueError("未找到开奖号码数据表格 (id=tablelist)")
-        trs = table.find_all("tr")
+    """解析快乐 8 历史页面，返回包含 20 个球位的 DataFrame。"""
 
-    for tr in trs:
+    soup = BeautifulSoup(html, "lxml")
+    tbody = soup.find("tbody", attrs={"id": "tdata"})
+    if not tbody:
+        raise ValueError("未找到开奖号码数据表格 (id=tdata)")
+
+    rows = []
+    for tr in tbody.find_all("tr"):
         tds = tr.find_all("td")
         if not tds:
             continue
         issue = tds[0].get_text(strip=True)
-        if not issue or issue == "期号":
+        if not issue or not issue.isdigit():
+            continue
+        numbers = [
+            td.get_text(strip=True)
+            for td in tds
+            if td.get_text(strip=True).isdigit()
+        ]
+        if len(numbers) < config.red.sequence_len:
             continue
         record = {"期数": issue}
-        if config.code == "ssq":
-            for idx in range(config.red.sequence_len):
-                record[f"红球_{idx + 1}"] = tds[idx + 1].get_text(strip=True)
-            record["蓝球_1"] = tds[7].get_text(strip=True)
-        elif config.code == "dlt":
-            for idx in range(config.red.sequence_len):
-                record[f"红球_{idx + 1}"] = tds[idx + 1].get_text(strip=True)
-            for idx in range(config.blue.sequence_len):
-                record[f"蓝球_{idx + 1}"] = tds[6 + idx].get_text(strip=True)
-        elif config.code in {"pls", "sd", "qxc"}:
-            digits = tds[1].get_text(strip=True).split(" ")
-            for idx, value in enumerate(digits):
-                record[f"红球_{idx + 1}"] = value
-        elif config.code == "kl8":
-            numbers = [td.get_text(strip=True) for td in tds if td.get_text(strip=True).isdigit()]
-            for idx, value in enumerate(numbers):
-                record[f"红球_{idx + 1}"] = value
+        for idx, value in enumerate(numbers[: config.red.sequence_len]):
+            record[f"红球_{idx + 1}"] = value
         rows.append(record)
 
     if not rows:
-        raise ValueError("解析开奖号码失败，未获取到任何数据")
+        raise ValueError("解析开奖号码失败，未获取到有效数据")
     df = pd.DataFrame(rows)
     df.sort_values("期数", ascending=False, inplace=True)
     return df.reset_index(drop=True)
 
 
 def _parse_kl8_sequence(text: str) -> pd.DataFrame:
+    """解析 917500 顺序文本为 DataFrame。"""
+
     rows = []
-    lines = sorted(text.splitlines(), reverse=True)
-    for line in lines:
+    for line in sorted(text.splitlines(), reverse=True):
         if not line or "," not in line:
             continue
-        parts = line.split(",")[0].split(" ")
-        if len(parts) < 22:
+        first_segment = line.split(",")[0]
+        parts = [item for item in first_segment.split(" ") if item]
+        if len(parts) < 21:
             continue
-        _, issue = parts[0], parts[0]
+        issue = parts[0]
         record = {"期数": issue}
         for idx in range(1, 21):
-            record[f"红球_{idx}"] = parts[idx + 1]
+            record[f"红球_{idx}"] = parts[idx]
         rows.append(record)
     if not rows:
-        raise ValueError("快乐8出球顺序数据解析失败")
+        raise ValueError("快乐 8 出球顺序数据解析失败")
     df = pd.DataFrame(rows)
     return df.reset_index(drop=True)
 
 
 def get_current_issue(code: str, client: Optional[LotteryHttpClient] = None) -> str:
-    """获取指定彩票的最新期号。"""
+    """查询快乐 8 最新期号。"""
 
     cfg = LOTTERY_CONFIGS[code]
     client = client or LotteryHttpClient(
@@ -180,20 +160,17 @@ def get_current_issue(code: str, client: Optional[LotteryHttpClient] = None) -> 
         user_agent=NETWORK_CONFIG["user_agent"],
     )
 
-    if cfg.code in {"qxc", "pls", "sd"}:
-        url = f"https://datachart.500.com/{cfg.code}/history/inc/history.php"
-    elif cfg.code == "kl8":
-        url = f"https://datachart.500.com/{cfg.code}/history/newinc/jbzs_redblue.php"
-    else:
-        url = f"https://datachart.500.com/{cfg.code}/history/history.shtml"
-
+    url = f"https://datachart.500.com/{cfg.code}/history/newinc/jbzs_redblue.php"
     html = client.get_text(url)
     soup = BeautifulSoup(html, "lxml")
-    if cfg.code == "kl8":
-        value = soup.find("div", class_="wrap_datachart").find("input", {"id": "to"})["value"]
-    else:
-        value = soup.find("div", class_="wrap_datachart").find("input", {"id": "end"})["value"]
-    logger.info("【{}】最新期号: {}", cfg.name, value)
+    wrap = soup.find("div", class_="wrap_datachart")
+    if not wrap:
+        raise ValueError("未找到数据页面主体 (div.wrap_datachart)")
+    input_tag = wrap.find("input", {"id": "to"})
+    if not input_tag or not input_tag.has_attr("value"):
+        raise ValueError("未从页面提取到最新期号")
+    value = input_tag["value"]
+    logger.info("【{}】最新期号：{}", cfg.name, value)
     return value
 
 
@@ -204,7 +181,7 @@ def download_history(
     use_sequence_order: bool = False,
     client: Optional[LotteryHttpClient] = None,
 ) -> DownloadResult:
-    """下载历史数据并保存到 data/<code>/data.csv。"""
+    """下载快乐 8 历史数据并保存到 CSV。"""
 
     ensure_runtime_directories()
     cfg = LOTTERY_CONFIGS[code]
@@ -215,13 +192,13 @@ def download_history(
         user_agent=NETWORK_CONFIG["user_agent"],
     )
 
-    if cfg.code == "kl8" and use_sequence_order:
-        logger.info("下载快乐8出球顺序数据...")
+    if use_sequence_order:
+        logger.info("下载快乐 8 出球顺序数据...")
         text = client.get_text("https://data.917500.cn/kl81000_cq_asc.txt")
         df = _parse_kl8_sequence(text)
     else:
         url = _build_history_url(cfg, start, end)
-        logger.info("下载【{}】历史数据: {}", cfg.name, url)
+        logger.info("下载快乐 8 历史数据：{}", url)
         html = client.get_text(url)
         df = _parse_issue_list(cfg, html)
 
@@ -233,25 +210,26 @@ def download_history(
         code=cfg.code,
         total_issues=len(df),
         saved_path=str(output_path),
-        timestamp=datetime.utcnow().isoformat(),
+        timestamp=datetime.now(timezone.utc).isoformat(),
     )
-    logger.success("数据下载完成，共 {} 期，保存至 {}", meta.total_issues, output_path)
     (output_path.parent / "download_meta.json").write_text(
-        json.dumps(meta.__dict__, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(meta.__dict__, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
+    logger.success("数据下载完成，共 {} 期，保存到 {}", meta.total_issues, output_path)
     return meta
 
 
 def load_history(code: str) -> pd.DataFrame:
-    """加载本地已下载的历史数据。"""
+    """从本地 CSV 加载快乐 8 历史数据。"""
 
     cfg = LOTTERY_CONFIGS[code]
     path = PATHS["data"] / cfg.code / DATA_FILE_NAME
     if not path.exists():
-        raise FileNotFoundError(f"未找到 {cfg.name} 历史数据，请先执行下载: {path}")
+        raise FileNotFoundError(f"未找到 {cfg.name} 历史数据文件，请先执行下载：{path}")
     df = pd.read_csv(path, encoding="utf-8")
     if "期数" not in df.columns:
-        raise ValueError(f"{path} 缺失【期数】字段，数据损坏或格式异常")
+        raise ValueError(f"{path} 缺少【期数】字段，可能是损坏文件")
     return df
 
 
@@ -262,4 +240,3 @@ __all__ = [
     "get_current_issue",
     "load_history",
 ]
-

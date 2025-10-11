@@ -1,106 +1,60 @@
-# KL8彩票分析器 Makefile
-# 符合AGENTS.md规范的一键任务管理
+# KL8 分析工具 Makefile
 
-.PHONY: setup fmt lint test run build ci clean help
+.PHONY: setup fmt lint test build run download-data ci clean help
 .DEFAULT_GOAL := help
 
-# 环境和依赖管理
-setup:  ## 安装依赖、初始化环境
-	@echo "正在设置KL8分析器环境..."
-	python -m pip install --upgrade pip
-	pip install -r requirements.txt
-	pip install -r requirements-dev.txt
-	pip install -e .
-	@echo "创建必要的目录..."
-	mkdir -p data results logs
-	@echo "环境设置完成！"
+PYTHON ?= python
 
-# 代码格式化
-fmt:  ## 代码格式化
-	@echo "正在格式化代码..."
-	black src/ tests/ --line-length 100
-	isort src/ tests/ --profile black
+setup: ## 安装依赖并准备目录
+	@echo "请确认已激活 python311 (conda) 环境"
+	$(PYTHON) -m pip install --upgrade pip
+	$(PYTHON) -m pip install -r requirements.txt
+	$(PYTHON) -m pip install -r requirements-dev.txt
+	$(PYTHON) -c "from pathlib import Path; [Path(p).mkdir(parents=True, exist_ok=True) for p in ['data/kl8', 'results', 'logs']]"
+	@echo "依赖安装完成，目录已就绪"
 
-# 静态检查
-lint:  ## 静态检查
-	@echo "正在进行静态代码检查..."
-	flake8 src/ tests/ --max-line-length=100 --ignore=E203,W503
-	mypy src/kl8_analyzer --ignore-missing-imports
+fmt: ## 代码格式化
+	@echo "执行 black + isort..."
+	$(PYTHON) -m black src tests
+	$(PYTHON) -m isort src tests --profile black
 
-# 运行测试
-test:  ## 运行测试
-	@echo "正在运行测试套件..."
-	pytest tests/ -v --cov=src/kl8_analyzer --cov-report=term-missing --cov-report=html --cov-report=xml
+lint: ## 静态检查
+	@echo "执行 flake8 与 mypy..."
+	$(PYTHON) -m flake8 src tests
+	$(PYTHON) -m mypy src --ignore-missing-imports
 
-# 启动应用或示例
-run:  ## 启动应用或示例
-	@echo "启动KL8分析器演示..."
-	python -m kl8_analyzer.cli.main analysis --advanced_mode 0 --cal_nums 10 --window_size 6
+test: ## 运行测试与覆盖率
+	@echo "运行 pytest..."
+	$(PYTHON) -m pytest tests -v --cov=src --cov-report=term-missing --cov-report=xml
 
-# 构建产物
-build:  ## 构建产物
-	@echo "正在构建分发包..."
-	python -m build
-	@echo "构建完成，产物位于 dist/ 目录"
+build: ## 生成可分发的 pyc 产物
+	@echo "编译 Python 字节码..."
+	$(PYTHON) -m compileall src
 
-# 本地模拟CI
-ci: fmt lint test build  ## 本地模拟 CI：lint + test + build
-	@echo "✅ CI流程全部通过！"
+run: ## 执行示例（需要已有数据文件）
+	@echo "运行快乐8高频号码统计示例..."
+	$(PYTHON) examples/analysis_example.py
 
-# 清理临时文件
-clean:  ## 清理构建和缓存文件
-	@echo "正在清理临时文件..."
-	rm -rf build/ dist/ *.egg-info/
-	rm -rf .pytest_cache/ .coverage htmlcov/
-	find . -type d -name __pycache__ -exec rm -rf {} +
-	find . -type f -name "*.pyc" -delete
+download-data: ## 下载快乐8历史数据
+	$(PYTHON) scripts/get_data.py --name kl8
 
-# 数据管理
-download-data:  ## 下载历史数据
-	@echo "正在下载KL8历史数据..."
-	python -m kl8_analyzer.cli.main data --download
+ci: fmt lint test build ## 本地 CI
+	@echo "本地 CI 全部通过"
 
-# 运行不同模式的分析
-run-mode0:  ## 运行原始算法模式
-	@echo "运行模式0（原始算法）..."
-	python -m kl8_analyzer.cli.main analysis --advanced_mode 0 --cal_nums 20 --total_create 100
+clean: ## 清理临时文件和缓存
+	@echo "清理缓存与编译文件..."
+	$(PYTHON) -c "import shutil, pathlib; [shutil.rmtree(pathlib.Path(name), ignore_errors=True) for name in ['build', 'dist', '.pytest_cache', 'htmlcov']]"
+	$(PYTHON) -c "import shutil, pathlib; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]"
+	$(PYTHON) -c "import pathlib; [p.unlink() for p in pathlib.Path('.').rglob('*.pyc')]"
 
-run-mode1:  ## 运行中级算法模式
-	@echo "运行模式1（中级算法）..."
-	python -m kl8_analyzer.cli.main analysis --advanced_mode 1 --cal_nums 20 --total_create 200
-
-run-mode2:  ## 运行高级算法模式
-	@echo "运行模式2（高级算法）..."
-	python -m kl8_analyzer.cli.main analysis --advanced_mode 2 --cal_nums 20 --total_create 500
-
-# 收益分析
-cash-analysis:  ## 运行收益分析
-	@echo "运行收益分析..."
-	python -m kl8_analyzer.cli.main cash --start_date 2025-01-01 --end_date 2025-01-31
-
-# 批量任务
-batch-run:  ## 运行批量任务
-	@echo "运行批量任务..."
-	python -m kl8_analyzer.cli.main runner --mode batch --total_create 1000
-
-# 开发环境
-dev-install:  ## 安装开发依赖
-	@echo "安装开发依赖..."
-	pip install -r requirements-dev.txt
-	pre-commit install
-
-# 帮助信息
-help:  ## 显示此帮助信息
-	@echo "KL8彩票分析器 - 可用命令："
-	@echo ""
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
-	@echo ""
-	@echo "快速开始："
-	@echo "  make setup     # 首次安装和环境设置"
-	@echo "  make ci        # 运行完整的CI检查"
-	@echo "  make run       # 运行基本示例"
-	@echo ""
-	@echo "算法模式对比："
-	@echo "  make run-mode0 # 原始算法（快速）"
-	@echo "  make run-mode1 # 中级算法（平衡）"
-	@echo "  make run-mode2 # 高级算法（最佳效果）"
+help: ## 查看可用命令
+	@echo "可用任务："
+	@echo "  make setup          - 安装依赖并初始化目录"
+	@echo "  make download-data  - 下载快乐8历史数据"
+	@echo "  make fmt            - 格式化代码"
+	@echo "  make lint           - 静态检查"
+	@echo "  make test           - 运行测试"
+	@echo "  make build          - 生成 pyc 产物"
+	@echo "  make run            - 运行示例分析"
+	@echo "  make ci             - 本地 CI（fmt+lint+test+build）"
+	@echo "  make clean          - 清理缓存文件"
