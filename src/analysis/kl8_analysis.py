@@ -49,6 +49,14 @@ except Exception:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from src.config import *  # type: ignore
+try:
+    from .feature_enhancer import compute_enhanced_scores  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.feature_enhancer import compute_enhanced_scores  # type: ignore
 from itertools import combinations
 from loguru import logger
 
@@ -71,6 +79,12 @@ parser.add_argument('--path', default="", type=str, help='path')
 parser.add_argument('--simple_mode', default=0, type=int, help='simple mode') 
 parser.add_argument('--random_mode', default=0, type=int, help='random mode')
 parser.add_argument('--advanced_mode', default=0, type=int, help='advanced algorithm mode: 0=original, 1=genetic+bayesian, 2=full_advanced')
+parser.add_argument(
+    '--feature_mode',
+    default="hybrid",
+    type=str,
+    help='feature ranking mode: hybrid / momentum / cooccurrence'
+)
 args = parser.parse_args()
 
 current_time = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -1067,6 +1081,8 @@ def deep_feature_extraction():
 def advanced_number_generation(use_genetic=True, use_ml=True):
     """结合多种高级算法的号码生成策略"""
     candidate_solutions = []
+    feature_score_lookup = {}
+    feature_debug = None
     
     # 1. 遗传算法生成
     if use_genetic:
@@ -1174,7 +1190,44 @@ def advanced_number_generation(use_genetic=True, use_ml=True):
     except Exception as e:
         logger.warning(f"马尔可夫链生成失败: {e}")
     
-    # 4. 如果没有足够的候选解，使用改进的随机生成
+    # 4. 特征增强（共现 + 动量）
+    try:
+        recent_window = max(20, min(limit_line, args.limit_line))
+        reference_window = max(recent_window * 2, 60)
+        enhanced_ranked, feature_debug = compute_enhanced_scores(
+            ori_numpy,
+            limit=limit_line,
+            recent_window=recent_window,
+            reference_window=reference_window,
+            decay=0.97,
+        )
+        if enhanced_ranked:
+            feature_score_lookup = {num: score for num, score in enhanced_ranked}
+            mode = (args.feature_mode or "hybrid").lower()
+            if feature_debug and mode == "momentum":
+                ranked_source = sorted(
+                    feature_debug.momentum_scores.items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+            elif feature_debug and mode == "cooccurrence":
+                ranked_source = sorted(
+                    feature_debug.co_occurrence_scores.items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+            else:
+                ranked_source = enhanced_ranked
+            ranked_numbers = [num for num, _ in ranked_source]
+            feature_solution = sorted(ranked_numbers[:args.cal_nums])
+            if len(feature_solution) == args.cal_nums:
+                candidate_solutions.append(feature_solution)
+                if args.check_in_main:
+                    logger.info("特征增强策略推荐号码：{}", feature_solution)
+    except Exception as e:
+        logger.warning(f"特征增强生成失败: {e}")
+    
+    # 5. 如果没有足够的候选解，使用改进的随机生成
     while len(candidate_solutions) < 3:
         solution = []
         
@@ -1200,7 +1253,7 @@ def advanced_number_generation(use_genetic=True, use_ml=True):
         if len(solution) == args.cal_nums:
             candidate_solutions.append(sorted(solution))
     
-    # 5. 评估并选择最佳解
+    # 6. 评估并选择最佳解
     best_solution = None
     best_score = float('-inf')
     
@@ -1222,6 +1275,12 @@ def advanced_number_generation(use_genetic=True, use_ml=True):
                 # 其他约束评分 (简化)
                 odd_count = sum(1 for n in solution if n % 2 == 1)
                 score -= abs(odd_count/len(solution) - his_odd) * 10
+                
+                if feature_score_lookup:
+                    feature_bonus = sum(
+                        feature_score_lookup.get(n, 0.0) for n in solution
+                    ) / len(solution)
+                    score += feature_bonus
                 
                 if score > best_score:
                     best_score = score

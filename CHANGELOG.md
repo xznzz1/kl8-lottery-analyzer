@@ -1,6 +1,20 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2025-10-12 特征增强引擎
+### Added
+- 新增 `src/analysis/feature_enhancer.py`，提供近期动量与共现谱的混合评分。
+- `kl8_analysis.py` / `kl8_analysis_plus.py` 支持 `--feature_mode` 参数（`hybrid` / `momentum` / `cooccurrence`）。
+- 新增 `tests/test_feature_enhancer.py`，覆盖空数据、动量与共现得分计算。
+
+### Changed
+- 高级号码生成流程叠加特征得分，在候选筛选阶段加入加权评分。
+- Plus 版本在贝叶斯候选排序与补全时引用特征得分，避免单纯随机补位。
+
+### Documentation
+- 重写 `README.md`、`docs/kl8_usage_guide.md`、`docs/kl8_algorithm_theory.md`、`docs/api.md`，加入特征增强说明与示例。
+- `docs/decision_record.md` 记录特征增强引擎取舍。
+
 ## [1.1.0] - 2025-12-19 🚀 多线程架构优化
 ### Added
 - **多线程优化版本**：新增 `kl8_analysis_plus.py` 和 `kl8_cash_plus.py`

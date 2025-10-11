@@ -1,88 +1,31 @@
-# 公共 API 一览（🚀 包含多线程优化版本）
+﻿# 公共 API 一览（2025.10）
 
-## 核心 API
+## 核心模块
 
 | 模块 | 函数 | 参数 | 返回值 | 说明 |
 |------|------|------|--------|------|
-| `src.common` | `get_data_run(name, sequence_mode=False, start_issue=None, end_issue=None)` | `name`: 彩票代号；`sequence_mode`: 是否抓取顺序数据；`start_issue`/`end_issue`: 期号区间 | `None` | 下载快乐 8 历史数据并写入 `data/kl8/data.csv`。 |
-| `src.common` | `get_current_number(name)` | `name`: 彩票代号 | `str` | 返回快乐 8 最新一期的期号。 |
-| `src.common` | `load_history(name)` | `name`: 彩票代号 | `pandas.DataFrame` | 从本地 CSV 读取历史数据。 |
-| `src.data_fetcher` | `download_history(code, start=None, end=None, use_sequence_order=False, client=None)` | 同上 | `DownloadResult` | 带重试的网络抓取实现，可选顺序数据模式。 |
-| `src.data_fetcher` | `get_current_issue(code, client=None)` | 彩票代号、可选客户端 | `str` | 读取 500.com 页面上的最新期号。 |
+| `src.common` | `get_data_run(name, sequence_mode=False, start_issue=None, end_issue=None)` | 彩票代号；是否抓取顺序数据；期号区间 | `None` | 下载快乐 8 历史数据并写入 `data/kl8/data.csv`。 |
+| `src.common` | `get_current_number(name)` | 彩票代号 | `str` | 读取快乐 8 最新期号。 |
+| `src.common` | `load_history(name)` | 彩票代号 | `pandas.DataFrame` | 从本地 CSV 加载历史开奖数据。 |
+| `src.data_fetcher` | `download_history(code, start=None, end=None, use_sequence_order=False, client=None)` | 彩票代号、期号区间、顺序模式、HTTP 客户端 | `DownloadResult` | 带重试和白名单校验的抓取实现。 |
+| `src.data_fetcher` | `get_current_issue(code, client=None)` | 彩票代号、可选 HTTP 客户端 | `str` | 获取官网最新期号。 |
 | `src.data_fetcher` | `load_history(code)` | 彩票代号 | `pandas.DataFrame` | 与 `common.load_history` 等价，直接暴露底层能力。 |
+| `src.analysis.feature_enhancer` | `compute_enhanced_scores(draws, limit, recent_window=40, reference_window=160, decay=0.97, weights=(0.45,0.25,0.30))` | 历史开奖二维数组、统计范围、窗口、衰减、权重 | `(List[Tuple[int, float]], FeatureDebugInfo)` | 计算混合得分并返回排序结果与调试信息；支持 `--feature_mode`。 |
+| `src.analysis.feature_enhancer` | `compute_recency_and_momentum_scores(draws, limit, recent_window=40, reference_window=160)` | 历史开奖二维数组、窗口设置 | `(np.ndarray, np.ndarray)` | 分别返回近期频率得分与动量得分。 |
+| `src.analysis.feature_enhancer` | `compute_co_occurrence_scores(draws, limit, decay=0.97)` | 历史开奖二维数组、统计范围、衰减因子 | `np.ndarray` | 通过共现矩阵的主特征向量衡量号码中心性。 |
 
-## 🚀 多线程优化 API（Plus版本）
+## Plus 版本并行接口
 
-### kl8_analysis_plus.py
-```python
-# 关键函数签名
-def download_data_if_needed(download, cal_nums):
-    """单线程数据下载函数，避免重复下载"""
-    pass
+### `kl8_analysis_plus.py`
+- `download_data_if_needed(download: int, cal_nums: int) -> None`：主线程数据下载，避免重复 IO。
+- `sub_process(task_args) -> list`：线程池工作函数，返回单组号码组合。
 
-def sub_process(args_tuple):
-    """线程池工作函数，线程安全的号码生成"""
-    pass
+### `kl8_cash_plus.py`
+- `check_lottery(file_path, file_name, data_dict, download_flag) -> dict`：单文件收益分析。
+- `process_files_parallel(file_list, max_workers=4) -> list`：线程池批量收益分析。
 
-# 使用示例
-from concurrent.futures import ThreadPoolExecutor
-import threading
+## 线程安全约定
+- 共享资源必须使用 `threading.Lock`：`with results_lock: shared.append(item)`。
+- 工作线程需捕获异常，单次失败不会终止主流程。
 
-# 线程池配置
-max_workers = 8
-results_lock = threading.Lock()
-shared_results = []
-
-# 并发执行
-with ThreadPoolExecutor(max_workers=max_workers) as executor:
-    futures = [executor.submit(sub_process, args) for args in task_list]
-```
-
-### kl8_cash_plus.py
-```python
-# 关键函数签名
-def check_lottery(file_path, file_name, data_dict, download_flag):
-    """线程安全的收益分析函数"""
-    pass
-
-def process_files_parallel(file_list, max_workers=4):
-    """并行处理多个预测文件"""
-    pass
-
-# 使用示例
-results = process_files_parallel(
-    file_list=["result1.txt", "result2.txt"], 
-    max_workers=6
-)
-```
-
-## 线程安全特性
-
-### 共享资源保护
-```python
-import threading
-
-# 全局锁定义
-results_lock = threading.Lock()
-progress_lock = threading.Lock()
-
-# 安全访问模式
-with results_lock:
-    shared_results.append(new_result)
-```
-
-### 错误处理机制
-```python
-# 线程级错误隔离
-try:
-    result = worker_function(args)
-    with results_lock:
-        shared_results.append(result)
-except Exception as e:
-    logger.error(f"工作线程错误: {e}")
-    # 单线程失败不影响其他线程
-```
-
-> **使用建议**：对于大规模批量处理，推荐使用 Plus 版本的多线程优化 API。传统版本适合单次小规模分析。
-> 
-> **调用方式**：由于 `src/analysis` 下的脚本仍以 CLI 方式存在，若要在代码中复用，请改用 `subprocess` 调用并传入完整参数。
+> CLI 脚本仍以命令行方式存在；若需在代码中复用，请通过 `subprocess.run([...])` 调用并写明全部参数。

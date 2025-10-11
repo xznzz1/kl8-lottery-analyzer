@@ -1,0 +1,53 @@
+# -*- coding: utf-8 -*-
+import numpy as np
+
+from src.analysis.feature_enhancer import (
+    FeatureDebugInfo,
+    compute_co_occurrence_scores,
+    compute_enhanced_scores,
+    compute_recency_and_momentum_scores,
+)
+
+
+def _build_sample_draws(rounds: int = 40) -> np.ndarray:
+    draws = []
+    for idx in range(rounds):
+        issue = 2025000 - idx
+        base = list(range(1, 21))
+        rotated = base[idx % len(base):] + base[:idx % len(base)]
+        draws.append([issue] + rotated)
+    return np.asarray(draws, dtype=int)
+
+
+def test_recency_and_momentum_scores_shape():
+    draws = _build_sample_draws()
+    recency, momentum = compute_recency_and_momentum_scores(draws, limit=30)
+    assert recency.shape[0] == 81
+    assert momentum.shape[0] == 81
+    assert 0.0 <= recency.max() <= 1.0
+    assert 0.0 <= momentum.max() <= 1.0
+
+
+def test_co_occurrence_scores_normalised():
+    draws = _build_sample_draws()
+    scores = compute_co_occurrence_scores(draws, limit=20)
+    assert scores.shape[0] == 81
+    assert 0.0 <= scores.max() <= 1.0
+
+
+def test_compute_enhanced_scores_returns_ranked_list():
+    draws = _build_sample_draws()
+    ranked, debug = compute_enhanced_scores(draws, limit=40, recent_window=25, reference_window=35)
+    assert len(ranked) == 80
+    assert isinstance(debug, FeatureDebugInfo)
+    # 检查排序单调性
+    for i in range(len(ranked) - 1):
+        assert ranked[i][1] >= ranked[i + 1][1]
+
+
+def test_compute_enhanced_scores_with_empty_input():
+    draws = np.empty((0, 21), dtype=int)
+    ranked, debug = compute_enhanced_scores(draws, limit=10)
+    assert ranked == []
+    assert isinstance(debug, FeatureDebugInfo)
+    assert debug.combined_scores == []

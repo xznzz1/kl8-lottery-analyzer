@@ -50,6 +50,14 @@ except Exception:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from src.config import *  # type: ignore
+try:
+    from .feature_enhancer import compute_enhanced_scores  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.feature_enhancer import compute_enhanced_scores  # type: ignore
 from itertools import combinations
 from loguru import logger
 from multiprocessing import Process, Manager
@@ -76,6 +84,12 @@ parser.add_argument('--simple_mode', default=0, type=int, help='simple mode')
 parser.add_argument('--random_mode', default=0, type=int, help='random mode')
 parser.add_argument('--max_workers', default=4, type=int, help='max_workers')
 parser.add_argument('--advanced_mode', default=0, type=int, help='advanced algorithm mode: 0=original, 1=genetic+bayesian, 2=full_advanced')
+parser.add_argument(
+    '--feature_mode',
+    default="hybrid",
+    type=str,
+    help='feature ranking mode: hybrid / momentum / cooccurrence'
+)
 #-------------------------------------------------------------------------------------------------------------#
 args = parser.parse_args()
 
@@ -366,10 +380,53 @@ def advanced_number_generation_plus(use_genetic=True, use_ml=True):
     try:
         # 简化版的高级生成，适合多进程环境
         candidate_solutions = []
+        feature_score_lookup = {}
+        feature_debug = None
+        enhanced_ranked = []
+        try:
+            recent_window = max(20, min(limit_line, args.limit_line))
+            reference_window = max(recent_window * 2, 60)
+            enhanced_ranked, feature_debug = compute_enhanced_scores(
+                ori_numpy,
+                limit=limit_line,
+                recent_window=recent_window,
+                reference_window=reference_window,
+                decay=0.97,
+            )
+            if enhanced_ranked:
+                feature_score_lookup = {num: score for num, score in enhanced_ranked}
+        except Exception as exc:
+            logger.warning(f"特征增强初始化失败: {exc}")
+            enhanced_ranked = []
         
         # 1. 贝叶斯优化生成
         bayesian_probs = bayesian_analysis()
         top_numbers = [num for num, _ in bayesian_probs[:args.cal_nums*2]]
+        if feature_score_lookup:
+            mode = (args.feature_mode or "hybrid").lower()
+            if feature_debug and mode == "momentum":
+                ranked_source = sorted(
+                    feature_debug.momentum_scores.items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+            elif feature_debug and mode == "cooccurrence":
+                ranked_source = sorted(
+                    feature_debug.co_occurrence_scores.items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+            else:
+                ranked_source = enhanced_ranked
+            ranked_numbers = [num for num, _ in ranked_source]
+            merged = []
+            for num in ranked_numbers + top_numbers:
+                if num not in merged:
+                    merged.append(num)
+            if merged:
+                top_numbers = merged[:max(args.cal_nums * 2, len(top_numbers))]
+                if args.check_in_main:
+                    logger.info("特征增强排序后的候选列表：{}", top_numbers[:args.cal_nums])
         
         # 基于贝叶斯概率的智能选择
         bayesian_solution = []
@@ -399,6 +456,9 @@ def advanced_number_generation_plus(use_genetic=True, use_ml=True):
                     expected = his_group_rate[i] * len(test_solution)
                     score -= abs(count - expected)
                 
+                if feature_score_lookup:
+                    score += feature_score_lookup.get(num, 0.0)
+                
                 if score > best_score:
                     best_score = score
                     best_num = num
@@ -413,7 +473,11 @@ def advanced_number_generation_plus(use_genetic=True, use_ml=True):
         while len(bayesian_solution) < args.cal_nums:
             available = [n for n in range(1, 81) if n not in bayesian_solution]
             if available:
-                bayesian_solution.append(random.choice(available))
+                if feature_score_lookup:
+                    available.sort(key=lambda n: feature_score_lookup.get(n, 0.0), reverse=True)
+                    bayesian_solution.append(available[0])
+                else:
+                    bayesian_solution.append(random.choice(available))
             else:
                 break
                 
