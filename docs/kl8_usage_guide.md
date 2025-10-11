@@ -56,7 +56,7 @@ python kl8_analysis.py --cal_nums 10 --total_create 100 --limit_line 200 --advan
 ### 1.2 高级算法生成（完整算法栈）
 ```bash
 # 使用全套8种高级算法（Mode 2）
-python kl8_analysis.py --cal_nums 20 --total_create 200 --limit_line 500 --advanced_mode 2
+python kl8_analysis.py --cal_nums 10 --total_create 200 --limit_line 500 --advanced_mode 2
 
 # 完整算法栈：
 # 1. 修正贝叶斯分析 (Beta-Binomial共轭先验)
