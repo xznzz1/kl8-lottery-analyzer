@@ -5,9 +5,19 @@ Author: KittenCN
 
 import pandas as pd
 import argparse
+import os
+import sys
+from pathlib import Path
 
 from tqdm import tqdm
-from ..config import *
+# 兼容脚本直跑：相对导入失败时，回退到把项目根加入 sys.path 并做绝对导入
+try:
+    from ..config import *  # type: ignore
+except Exception:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from src.config import *  # type: ignore
 from itertools import combinations
 from loguru import logger
 
@@ -46,7 +56,13 @@ name = args.name
 nums_index = 0
 cal_nums = int(args.cal_nums)
 if args.download == 1:
-    from ..common import get_data_run
+    try:
+        from ..common import get_data_run  # type: ignore
+    except Exception:
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+        from src.common import get_data_run  # type: ignore
     get_data_run(name=name, cq=0)
 ori_data = pd.read_csv("{}{}".format(name_path[name]["path"], data_file_name))
 ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][1:]

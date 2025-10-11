@@ -5,11 +5,22 @@ Author: KittenCN
 
 import pandas as pd
 import argparse
+import os
+import sys
+from pathlib import Path
 # import subprocess
-# import threading
+import threading
 from multiprocessing import Process
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-from ..config import *
+# 兼容脚本直跑：相对导入失败时，回退到把项目根加入 sys.path 并做绝对导入
+try:
+    from ..config import *  # type: ignore
+except Exception:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from src.config import *  # type: ignore
 from itertools import combinations
 # from loguru import logger
 # from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -50,11 +61,25 @@ name = args.name
 nums_index = 0
 cal_nums = int(args.cal_nums)
 content = []
-if args.download == 1:
-    from ..common import get_data_run
-    get_data_run(name=name, cq=0)
-ori_data = pd.read_csv("{}{}".format(name_path[name]["path"], data_file_name))
-ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][1:]
+
+# 数据下载函数，单独处理
+def download_data_if_needed():
+    """单线程下载数据"""
+    if args.download == 1:
+        if args.simple_mode == 0:
+            print("开始下载数据...")
+        try:
+            from ..common import get_data_run  # type: ignore
+        except Exception:
+            PROJECT_ROOT = Path(__file__).resolve().parents[2]
+            if str(PROJECT_ROOT) not in sys.path:
+                sys.path.insert(0, str(PROJECT_ROOT))
+            from src.common import get_data_run  # type: ignore
+        get_data_run(name=name, cq=0)
+        if args.simple_mode == 0:
+            print("数据下载完成")
+
+# 数据加载将在主程序块中处理
 # if args.current_nums >= 0:
 #     index = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0] - (args.current_nums + 1)
 #     if index >= 0:
@@ -87,14 +112,25 @@ def sub_check_lottery(item, cash_select, cash_price, cash_list):
             cash_list[index] += 1
             return cash_list
 
-def check_lottery(file_path, filename, args):
-    global ori_numpy, nums_index, all_cash, all_lucky, content, cal_nums
+def check_lottery(file_path, filename, args, ori_data_param):
+    # 使用本地变量替代全局变量，避免线程冲突
+    ori_data = ori_data_param
+    local_content = []
+    local_all_cash = 0
+    local_all_lucky = 0
+    cal_nums = int(args.cal_nums)  # 初始化本地cal_nums变量
     cash_file_name = file_path + filename
     filename_split = filename.split('_') 
     if len(filename_split) == 4:
-        if int(filename_split[-1].split('.')[0]) > 0:
-            args.current_nums = int(filename_split[-1].split('.')[0])
-    nums_index += 1
+        period_str = filename_split[-1].split('.')[0]
+        if period_str != "next" and period_str.isdigit() and int(period_str) > 0:
+            args.current_nums = int(period_str)
+    
+    # 从文件名中获取索引，避免使用全局变量
+    file_index = len([f for f in os.listdir(file_path) if f <= filename and f.endswith('.csv')])
+    
+    # 设置默认的ori_numpy，然后根据current_nums调整
+    ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][1:]
     if args.current_nums >= ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[-1][0] and args.current_nums <= ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0]:
         index = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0] - args.current_nums
         if index >= 0:
@@ -133,11 +169,10 @@ def check_lottery(file_path, filename, args):
     for i in range(len(cash_select)):
         total_cash += cash_list[i] * cash_price[i]
     if args.simple_mode == 0 or (args.simple_mode == 2 and total_cash / (len(cash_numpy) * 2) * 100 >= 100):
-        # logger.info("{}, 第{}期，本期共投入{}元，总奖金为{}元，返奖率{:.2f}%。".format(args.path, nums_index, len(cash_numpy) * 2, total_cash, total_cash / (len(cash_numpy) * 2) * 100))
-        content.append("{}, 第{}张，本期共投入{}元，总奖金为{}元，返奖率{:.2f}%。".format(args.path, nums_index, len(cash_numpy) * 2, total_cash, total_cash / (len(cash_numpy) * 2) * 100))
-    all_cash += len(cash_numpy) * 2
-    all_lucky += total_cash
-    return all_cash, all_lucky, content, args
+        local_content.append("{}, 第{}张，本期共投入{}元，总奖金为{}元，返奖率{:.2f}%。".format(args.path, file_index, len(cash_numpy) * 2, total_cash, total_cash / (len(cash_numpy) * 2) * 100))
+    local_all_cash += len(cash_numpy) * 2
+    local_all_lucky += total_cash
+    return local_all_cash, local_all_lucky, local_content, args
 
 ## 判断文件是否存在
 def check_file(_file_name):
@@ -163,6 +198,13 @@ def write_file_core(_content,_file_name="./kl8_runnint_results.txt"):
             f.write(item + "\n")
 
 if __name__ == "__main__":
+    # 先下载数据（单线程）
+    download_data_if_needed()
+    
+    # 然后加载数据
+    ori_data = pd.read_csv("{}{}".format(name_path[name]["path"], data_file_name))
+    ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][1:]
+    
     nums_index = 0
     if args.path == "" or args.cash_file_name != "-1":
         if args.random_mode == 0:
@@ -185,9 +227,14 @@ if __name__ == "__main__":
             cash_file_name = file_path + file_list[-1]   
             filename_split = file_list[-1].split('_')
             if len(filename_split) == 4:
-                if int(filename_split[-1].split('.')[0]) > 0:
-                    args.current_nums = int(filename_split[-1].split('.')[0])
-        check_lottery(cash_file_name=cash_file_name, args=args, path_mode=0)
+                period_str = filename_split[-1].split('.')[0]
+                if period_str != "next" and period_str.isdigit() and int(period_str) > 0:
+                    args.current_nums = int(period_str)
+        # 处理单个文件
+        filename = os.path.basename(cash_file_name)
+        file_dir = os.path.dirname(cash_file_name) + "/"
+        all_cash, all_lucky, file_content, _ = check_lottery(file_dir, filename, args, ori_data)
+        content.extend(file_content)
     else:
         if args.random_mode == 0:
             if args.path == "":
@@ -203,18 +250,24 @@ if __name__ == "__main__":
         import os
         file_list = [_ for _ in os.listdir(file_path) if _.split('.')[1] in endstring]
         file_list.sort(key=lambda fn: os.path.getmtime(file_path + fn))
-        threads = []
-        # for j in tqdm(range(len(file_list)), desc='CashThread {}'.format(args.path), leave=False):
-        for j in range(len(file_list)):
-            filename = file_list[j]
-            # t = threading.Thread(target=check_lottery, args=(file_path, filename, args))
-            t = Process(target=check_lottery, args=(file_path, filename, args))
-            threads.append(t)
-            t.start()
-        # for t in threads:
-        for t_index in tqdm(range(len(threads)), desc='CashThread {}'.format(args.path), leave=False):
-            t = threads[t_index]
-            t.join()
+        
+        # 使用线程锁保护共享变量
+        results_lock = threading.Lock()
+        
+        if args.simple_mode == 0:
+            print(f"开始处理 {len(file_list)} 个文件...")
+        
+        # 使用线程池来避免多进程的全局变量共享问题
+        with ThreadPoolExecutor(max_workers=int(args.max_workers)) as executor:
+            future_to_file = {executor.submit(check_lottery, file_path, filename, args, ori_data): filename for filename in file_list}
+            for future in tqdm(as_completed(future_to_file), total=len(file_list), desc='CashThread {}'.format(args.path), leave=False):
+                data = future.result()
+                if data != None:
+                    thread_all_cash, thread_all_lucky, thread_content, thread_args = data
+                    with results_lock:
+                        all_cash += thread_all_cash
+                        all_lucky += thread_all_lucky
+                        content.extend(thread_content)
 
         # with ThreadPoolExecutor(max_workers=int(args.max_workers)) as executor:
         #     future_to_url = {executor.submit(check_lottery, file_path, file_list[filename_index], args): file_list[filename_index] for filename_index in tqdm(range(len(file_list)), desc='CashThread {}'.format(args.path), leave=False)}
@@ -222,6 +275,10 @@ if __name__ == "__main__":
         #         data = future.result()
                 # if data != None:
                 #     all_cash, all_lucky, content, args = data
-        # logger.info("{}, 总投入{}元，总奖金为{}元，返奖率{:.2f}%。".format(args.path, all_cash, all_lucky, all_lucky / all_cash * 100))
-        content.append("{}, 总投入{}元，总奖金为{}元，返奖率{:.2f}%。".format(args.path, all_cash, all_lucky, all_lucky / all_cash * 100))
+        # 计算总返奖率，避免除零错误
+        if all_cash > 0:
+            return_rate = all_lucky / all_cash * 100
+            content.append("{}, 总投入{}元，总奖金为{}元，返奖率{:.2f}%。".format(args.path, all_cash, all_lucky, return_rate))
+        else:
+            content.append("{}, 总投入0元，总奖金为{}元，无法计算返奖率。".format(args.path, all_lucky))
     write_file(content)

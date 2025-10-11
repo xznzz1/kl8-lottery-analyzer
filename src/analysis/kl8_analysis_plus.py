@@ -4,22 +4,57 @@ Author: KittenCN
 """
 
 import pandas as pd
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
 import random
 import argparse
 import datetime
 import os
+import sys
+from pathlib import Path
 # import time
 # import threading
 # import subprocess
-from tqdm import tqdm
-from sklearn.cluster import KMeans
+try:
+    from tqdm import tqdm
+except ImportError:
+    # Fallback: create a dummy tqdm for environments where it's not available
+    class tqdm:
+        def __init__(self, iterable=None, total=None, desc="", leave=True):
+            self.iterable = iterable
+            self.total = total
+        def __iter__(self):
+            return iter(self.iterable)
+        def update(self, n=1):
+            pass
+        def close(self):
+            pass
+        def set_description(self, desc):
+            pass
+        @staticmethod
+        def write(s):
+            print(s)
+
+try:
+    from sklearn.cluster import KMeans
+except ImportError:
+    KMeans = None
 from collections import defaultdict
-from ..config import *
+# 兼容脚本直跑：相对导入失败时，回退到把项目根加入 sys.path 并做绝对导入
+try:
+    from ..config import *  # type: ignore
+except Exception:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from src.config import *  # type: ignore
 from itertools import combinations
 from loguru import logger
-from multiprocessing import Process
-# from concurrent.futures import ThreadPoolExecutor, as_completed
+from multiprocessing import Process, Manager
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--name', default="kl8", type=str, help="lottery name")
@@ -48,15 +83,27 @@ current_time = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
 name = args.name
 if args.cal_nums < 0:
     args.cal_nums = abs(args.cal_nums) + 1
-if args.download == 1:
-    from ..common import get_data_run
-    get_data_run(name=name, cq=0)
-ori_data = pd.read_csv("{}{}".format(name_path[name]["path"], data_file_name))
-ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()
 
-if args.current_nums > 0 and args.current_nums >= ori_numpy[-1][0] and args.current_nums <= ori_numpy[0][0]:
-    index_diff = ori_numpy[0][0] - args.current_nums + 1
-    ori_numpy = ori_numpy[index_diff:]
+# 数据下载函数，单独处理
+def download_data_if_needed():
+    """单线程下载数据"""
+    if args.download == 1:
+        if args.simple_mode == 0:
+            print("开始下载数据...")
+        try:
+            from ..common import get_data_run  # type: ignore
+        except Exception:
+            from pathlib import Path as _Path  # type: ignore
+            import sys as _sys  # type: ignore
+            PROJECT_ROOT = _Path(__file__).resolve().parents[2]
+            if str(PROJECT_ROOT) not in _sys.path:
+                _sys.path.insert(0, str(PROJECT_ROOT))
+            from src.common import get_data_run  # type: ignore
+        get_data_run(name=name, cq=0)
+        if args.simple_mode == 0:
+            print("数据下载完成")
+
+# 数据加载将在主程序块中处理
 
 if args.random_mode == 0:
     if args.path == "":
@@ -514,11 +561,13 @@ def write_file(lst,file_name="result"):
 def write_file_core(lst,_file_name="result"):
     random_number = random.randint(0, 999999)
     current_time_in = str(int(current_time) + random_number)
-    file_name = file_path + "{}_{}_{}_{}.csv".format(_file_name, current_time_in,args.cal_nums,str(int(ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0])+1) if args.current_nums == -1 else args.current_nums)
+    # 使用简化的文件名生成，避免依赖ori_data
+    period_num = args.current_nums if args.current_nums != -1 else "next"
+    file_name = file_path + "{}_{}_{}_{}.csv".format(_file_name, current_time_in, args.cal_nums, period_num)
     while os.path.exists(file_name):
         random_number = random.randint(0, 999999)
         current_time_in = str(int(current_time) + random_number)
-        file_name = file_path + "{}_{}_{}_{}.csv".format(_file_name, current_time_in,args.cal_nums,str(int(ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0])+1) if args.current_nums == -1 else args.current_nums) 
+        file_name = file_path + "{}_{}_{}_{}.csv".format(_file_name, current_time_in, args.cal_nums, period_num) 
     with open(file_name, "w") as f:
         for i in range(args.cal_nums - 1):
             f.write("b" + str(i + 1) + ",")
@@ -671,6 +720,7 @@ def init_func(rate_mode=1):
     his_not_repeat_rate = cal_not_repeat_rate()
 
 def sub_process(i):
+    """简化的多进程处理函数"""
     global results, shiftings, shifting, start_time
     current_result = [0]
     
@@ -687,8 +737,9 @@ def sub_process(i):
                 # 验证高级解是否符合约束
                 err_code, check_result = check_rate([current_result])
                 if check_result:
-                    results.append(current_result[1:])
-                    shiftings.append(shifting)
+                    with results_lock:
+                        results.append(current_result[1:])
+                        shiftings.append(shifting)
                     return results, shiftings, shifting, start_time
         except Exception as e:
             logger.warning(f"高级算法失败，使用原始算法: {e}")
@@ -804,15 +855,18 @@ def sub_process(i):
                         repeat_flag = True
                         err_results.append(current_result)
                         break
-            if (datetime.datetime.now() - start_time).seconds > 60 and len(results) > last_result_length:
-                last_result_length = len(results)
-                start_time = datetime.datetime.now()
-                sorted_results = sorted(zip(results, shiftings), key=lambda x: x[1])
-                sorted_results, sorted_shiftings = zip(*sorted_results)
-                sorted_results = list(sorted_results)
-                write_file(sorted_results, "result")
-    results.append(current_result[1:])
-    shiftings.append(shifting)
+            # 注意：在子进程中不需要定期写文件，这会在主进程中处理
+            # if (datetime.datetime.now() - start_time).seconds > 60 and len(results) > last_result_length:
+            #     last_result_length = len(results)
+            #     start_time = datetime.datetime.now()
+            #     sorted_results = sorted(zip(results, shiftings), key=lambda x: x[1])
+            #     sorted_results, sorted_shiftings = zip(*sorted_results)
+            #     sorted_results = list(sorted_results)
+            #     write_file(sorted_results, "result")
+    
+    with results_lock:
+        results.append(current_result[1:])
+        shiftings.append(shifting)
     shifting = [round(num, 3) for num in shifting]
     return results, shiftings, shifting, start_time
 
@@ -824,6 +878,17 @@ def generate_random_numbers(num_rows, num_nums_per_row):
     return results
 
 if __name__ == "__main__":
+    # 先下载数据（单线程）
+    download_data_if_needed()
+    
+    # 然后加载数据
+    ori_data = pd.read_csv("{}{}".format(name_path[name]["path"], data_file_name))
+    ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()
+    
+    if args.current_nums > 0 and args.current_nums >= ori_numpy[-1][0] and args.current_nums <= ori_numpy[0][0]:
+        index_diff = ori_numpy[0][0] - args.current_nums + 1
+        ori_numpy = ori_numpy[index_diff:]
+    
     check_dir(file_path)
     last_time = ""
     if args.random_mode == 1:
@@ -976,8 +1041,12 @@ if __name__ == "__main__":
                             f.write("{},".format(item[index]))
                         f.write("{}\n".format(item[-1]))
     else: 
+        if args.simple_mode == 0:
+            print("开始初始化分析环境...")
         init_func(rate_mode=2)      
         shifting = cal_shiftings.copy()
+        if args.simple_mode == 0:
+            print("初始化完成，开始多线程数据处理...")
         # for _i in tqdm(range(args.repeat), desc='AnalysisThread {}-{}'.format(str(int(ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0])+1) if args.current_nums == -1 else args.current_nums, str(args.cal_nums)), leave=False):
         for _i in range(args.repeat):
             current_time = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -987,16 +1056,16 @@ if __name__ == "__main__":
             err_results = []
             results = []
             start_time = datetime.datetime.now()
-            threads = []
-            for i in range(1, total_create + 1):
-                # t = threading.Thread(target=sub_process, args=(i, ))
-                t = Process(target=sub_process, args=(i, ))
-                threads.append(t)
-                t.start()
-            # for t in threads:
-            for t_index in tqdm(range(len(threads)), desc='AnalysisThread {}-{}-{}'.format(str(int(ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0])+1) if args.current_nums == -1 else args.current_nums, str(args.cal_nums), _i), leave=False):
-                t = threads[t_index]
-                t.join()
+            results_lock = threading.Lock()
+            if args.simple_mode == 0:
+                print(f"启动 {total_create} 个处理进程...")
+            # 使用线程池来避免多进程的全局变量共享问题
+            with ThreadPoolExecutor(max_workers=int(args.max_workers)) as executor:
+                future_to_url = {executor.submit(sub_process, i): i for i in range(1, total_create + 1)}
+                for future in tqdm(as_completed(future_to_url), total=total_create, desc='AnalysisThread {}-{}-{}'.format(str(int(ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0])+1) if args.current_nums == -1 else args.current_nums, str(args.cal_nums), _i), leave=False):
+                    data = future.result()
+                    if data != None:
+                        results, shiftings, shifting, start_time = data
             # with ThreadPoolExecutor(max_workers=int(args.max_workers)) as executor:
             #     future_to_url = {executor.submit(sub_process, i, results, shiftings, shifting, start_time): i for i in tqdm(range(1, total_create + 1), desc='AnalysisThread {}-{}-{}'.format(str(int(ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0])+1) if args.current_nums == -1 else args.current_nums, str(args.cal_nums), _i), leave=False)}
             #     for future in as_completed(future_to_url):

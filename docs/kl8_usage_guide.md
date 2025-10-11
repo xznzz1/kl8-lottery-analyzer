@@ -21,9 +21,9 @@
 | 模块名 | 主要功能 | 性能特征 | 适用场景 |
 |--------|----------|----------|----------|  
 | `kl8_analysis.py` | 基础统计分析和号码生成 | 单线程，内存友好 | 小规模测试，算法验证 |
-| `kl8_analysis_plus.py` | 多进程并行分析 | 多进程，高性能 | 大批量号码生成 |
+| `kl8_analysis_plus.py` | **优化多线程并行分析** | **数据下载单线程+线程池处理** | **大批量号码生成（推荐）** |
 | `kl8_cash.py` | 中奖收益分析 | 单线程，精确计算 | 单期收益分析 |  
-| `kl8_cash_plus.py` | 批量收益分析 | 多进程，批量处理 | 历史收益回测 |
+| `kl8_cash_plus.py` | **优化批量收益分析** | **数据下载单线程+线程池批量处理** | **历史收益回测（推荐）** |
 | `kl8_running.py` | 任务调度管理 | 多任务编排 | 自动化批量执行 |
 
 ## 快速开始
@@ -71,20 +71,26 @@ python kl8_analysis.py --cal_nums 20 --total_create 200 --limit_line 500 --advan
 # - 历史拟合度达到0.96
 ```
 
-### 2. 高性能批量生成  
+### 2. 高性能批量生成（🔥 优化多线程架构）
 ```bash
-# 多进程生成大批量号码（支持高级算法）
+# 优化多线程生成大批量号码（支持高级算法）
 python kl8_analysis_plus.py --cal_nums 10 --total_create 1000 --max_workers 8 --advanced_mode 1
 
+# 🚀 多线程优化特性：
+# - 数据下载仅在主进程执行一次，避免重复下载
+# - 使用线程池替代多进程，避免全局变量冲突
+# - 线程锁保护共享资源，确保数据一致性
+# - 智能进度提示，实时显示处理状态
+
 # 性能提升参数：
-# --max_workers: 并行进程数
-# --simple_mode 1: 简化输出模式
+# --max_workers: 并行线程数（推荐为CPU核心数的1-2倍）
+# --simple_mode 1: 简化输出模式，减少内存占用
 # --advanced_mode: 高级算法模式（推荐Mode 1用于并行）
 ```
 
-### 2.1 超高性能批量生成（高级算法并行）
+### 2.1 超高性能批量生成（🔥 优化高级算法并行）
 ```bash
-# 多进程 + 高级算法并行执行
+# 优化线程池 + 高级算法并行执行
 python kl8_analysis_plus.py \
   --cal_nums 20 \
   --total_create 5000 \
@@ -93,20 +99,30 @@ python kl8_analysis_plus.py \
   --limit_line 500 \
   --max_attempts 2000
 
-# 高级并行特性：
-# - 支持Mode 2全套算法的并行执行
+# 🚀 优化高级并行特性：
+# - 数据下载与多线程处理完全分离
+# - 支持Mode 2全套算法的线程池并行执行
+# - 线程安全的结果收集和去重处理
 # - 智能任务分配和负载均衡
 # - 增强的容错和超时处理
 # - 实时性能监控和进度跟踪
+# - 避免了多进程的资源竞争问题
 ```
 
-### 3. 收益分析
+### 3. 收益分析（🔥 优化并发处理）
 ```bash
 # 分析单个预测文件的中奖情况
 python src/analysis/kl8_cash.py --cash_file_name result_20231201_10_2023241
 
-# 批量分析目录下所有文件
-python src/analysis/kl8_cash.py --path "test_path"
+# 🚀 优化批量分析目录下所有文件（推荐）
+python src/analysis/kl8_cash_plus.py --path "test_path" --max_workers 4
+
+# 优化特性：
+# - 数据下载仅执行一次，避免重复下载
+# - 线程池并发处理多个文件，大幅提升处理速度
+# - 线程安全的结果汇总，避免数据竞争
+# - 智能错误处理，单个文件失败不影响整体流程
+# - 实时进度显示，便于监控批量处理状态
 ```
 
 ### 4. 全自动批量任务
@@ -193,7 +209,7 @@ python kl8_analysis.py \
   --max_attempts 1000 \
   --simple_mode 1
 
-# 2. 多进程中级算法批量生成
+# 2. 🚀 优化线程池中级算法批量生成（推荐）
 python kl8_analysis_plus.py \
   --cal_nums 20 \
   --total_create 5000 \
@@ -201,6 +217,11 @@ python kl8_analysis_plus.py \
   --max_workers 6 \
   --limit_line 300 \
   --path "mode1_production"
+
+# 优化特性：
+# - 数据下载优化：仅主线程执行一次
+# - 线程池架构：避免多进程开销和全局变量冲突
+# - 内存优化：智能资源管理，减少内存峰值
 ```
 
 ### 场景3: 高级算法深度分析
@@ -219,7 +240,7 @@ python kl8_analysis.py \
   --statistical_test 1 \
   --simple_mode 0
 
-# 2. 高级算法并行大规模生成
+# 2. 🚀 优化高级算法并行大规模生成（终极性能）
 python kl8_analysis_plus.py \
   --cal_nums 20 \
   --total_create 10000 \
@@ -228,6 +249,13 @@ python kl8_analysis_plus.py \
   --limit_line 500 \
   --path "mode2_production" \
   --simple_mode 1
+
+# 终极优化架构：
+# - 单次数据下载 + 多线程高级算法并行
+# - 线程安全的全部8种高级算法执行
+# - 智能负载均衡，避免CPU过载
+# - 实时监控与进度显示
+# - 内存与性能双重优化
 ```
 
 ### 场景4: 传统大规模生产分析  

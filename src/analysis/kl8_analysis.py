@@ -4,17 +4,51 @@ Author: KittenCN
 """
 
 import pandas as pd
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
 import random
 import argparse
 import datetime
 import os
+import sys
+from pathlib import Path
 # import time
 import threading
-from tqdm import tqdm
-from sklearn.cluster import KMeans
+try:
+    from tqdm import tqdm
+except ImportError:
+    # Fallback: create a dummy tqdm for environments where it's not available
+    class tqdm:
+        def __init__(self, iterable=None, total=None, desc="", leave=True):
+            self.iterable = iterable
+            self.total = total
+        def __iter__(self):
+            return iter(self.iterable)
+        def update(self, n=1):
+            pass
+        def close(self):
+            pass
+        def set_description(self, desc):
+            pass
+        @staticmethod
+        def write(s):
+            print(s)
+
+try:
+    from sklearn.cluster import KMeans
+except ImportError:
+    KMeans = None
 from collections import defaultdict
-from ..config import *
+# 兼容脚本直跑：相对导入失败时，回退到把项目根加入 sys.path 并做绝对导入
+try:
+    from ..config import *  # type: ignore
+except Exception:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from src.config import *  # type: ignore
 from itertools import combinations
 from loguru import logger
 
@@ -44,7 +78,16 @@ name = args.name
 if args.cal_nums < 0:
     args.cal_nums = abs(args.cal_nums) + 1
 if args.download == 1:
-    from ..common import get_data_run
+    try:
+        from ..common import get_data_run  # type: ignore
+    except Exception:
+        # 延迟局部导入，避免未定义告警
+        from pathlib import Path as _Path  # type: ignore
+        import sys as _sys  # type: ignore
+        PROJECT_ROOT = _Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in _sys.path:
+            _sys.path.insert(0, str(PROJECT_ROOT))
+        from src.common import get_data_run  # type: ignore
     get_data_run(name=name, cq=0)
 ori_data = pd.read_csv("{}{}".format(name_path[name]["path"], data_file_name))
 ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()
