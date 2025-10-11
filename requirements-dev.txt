@@ -1,0 +1,42 @@
+# KL8 Lottery Analyzer - Development Requirements
+
+# 包含生产环境所有依赖
+-r kl8_requirements.txt
+
+# 代码质量和格式化工具
+black>=23.0.0
+isort>=5.12.0
+flake8>=6.0.0
+mypy>=1.0.0
+
+# 代码检查和安全
+bandit>=1.7.0
+safety>=2.3.0
+
+# 预提交钩子
+pre-commit>=3.0.0
+
+# 测试框架和覆盖率
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+pytest-benchmark>=4.0.0
+pytest-xdist>=3.0.0
+coverage>=7.0.0
+
+# 文档生成工具
+sphinx>=6.0.0
+sphinx-rtd-theme>=1.2.0
+myst-parser>=1.0.0
+
+# 开发工具
+ipython>=8.0.0
+jupyter>=1.0.0
+
+# 构建和打包工具
+build>=0.10.0
+twine>=4.0.0
+
+# 性能分析工具
+memory-profiler>=0.60.0
+py-spy>=0.3.0

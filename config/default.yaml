@@ -1,0 +1,97 @@
+# KL8 快乐8分析器 - 默认配置
+
+kl8_config:
+  name: "快乐8"
+  code: "kl8"
+  sequence_len: 20
+  num_classes: 80
+  default_window: 6
+  cal_nums: 20
+  
+  # 数据路径配置
+  data_path: "./data"
+  results_path: "./results"
+  logs_path: "./logs"
+  
+  # 高级算法模式配置
+  advanced_modes:
+    advanced_mode_0:
+      name: "修正贝叶斯分析"
+      enabled: true
+      weight: 0.15
+      parameters:
+        prior_weight: 0.1
+        update_threshold: 0.05
+    
+    advanced_mode_1:
+      name: "马尔可夫链分析"
+      enabled: true
+      weight: 0.12
+      parameters:
+        chain_length: 3
+        transition_window: 100
+    
+    advanced_mode_2:
+      name: "遗传算法优化"
+      enabled: true
+      weight: 0.13
+      parameters:
+        population_size: 50
+        generations: 100
+        mutation_rate: 0.01
+    
+    advanced_mode_3:
+      name: "深度学习特征"
+      enabled: true
+      weight: 0.18
+      parameters:
+        hidden_layers: [128, 64, 32]
+        dropout_rate: 0.3
+        learning_rate: 0.001
+    
+    advanced_mode_4:
+      name: "信息熵分析"
+      enabled: true
+      weight: 0.11
+      parameters:
+        entropy_window: 50
+        threshold: 0.8
+    
+    advanced_mode_5:
+      name: "自适应阈值"
+      enabled: true
+      weight: 0.14
+      parameters:
+        adaptation_rate: 0.1
+        min_threshold: 0.3
+        max_threshold: 0.9
+    
+    advanced_mode_6:
+      name: "统计检验"
+      enabled: true
+      weight: 0.09
+      parameters:
+        significance_level: 0.05
+        test_window: 200
+    
+    advanced_mode_7:
+      name: "集成策略"
+      enabled: true
+      weight: 0.08
+      parameters:
+        ensemble_methods: ["voting", "stacking", "bagging"]
+        meta_learner: "random_forest"
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} - {message}"
+  rotation: "1 day"
+  retention: "30 days"
+  
+# 性能配置
+performance:
+  max_workers: 4
+  batch_size: 1000
+  cache_size: 10000
+  memory_limit: "2GB"
