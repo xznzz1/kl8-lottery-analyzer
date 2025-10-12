@@ -13,6 +13,8 @@ paths:
   model: "./model"
   predict: "./predict"
   logs: "./logs"
+  results: "./results"
+  data_cache: "./data_cache"
 
 # 网络配置
 network:
@@ -45,3 +47,16 @@ gpu:
   enabled: true
   memory_growth: true
   device_id: 0
+
+# 分析增强参数
+analysis:
+  dirichlet:
+    prior_strength: 0.6      # 对称 Dirichlet 先验强度（越大越平滑）
+    window_size: 120         # 参与后验更新的滑动窗口长度
+    variance_weight: 0.35    # 方差惩罚权重（越大越保守）
+  rules:
+    min_support: 0.08        # 频繁项集最小支持度阈值
+    min_confidence: 0.6      # 关联规则最小置信度
+    max_itemset_size: 3      # 关注的最大项集大小
+    cache_ttl_seconds: 86400 # 规则缓存有效期（秒）
+    soft_penalty_weight: 0.4 # 软模式下的惩罚放大系数

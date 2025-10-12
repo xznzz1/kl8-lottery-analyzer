@@ -82,6 +82,14 @@ except Exception:
         if str(PROJECT_ROOT) not in sys.path:
             sys.path.insert(0, str(PROJECT_ROOT))
     from src.analysis.shared_download import ensure_data_available  # type: ignore
+try:
+    from .rule_miner import build_rule_filter  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.rule_miner import build_rule_filter  # type: ignore
 from itertools import combinations
 from loguru import logger
 from multiprocessing import Process, Manager
@@ -114,6 +122,37 @@ parser.add_argument(
     type=str,
     help='feature ranking mode: hybrid / momentum / cooccurrence'
 )
+parser.add_argument(
+    '--rule_filter',
+    default="none",
+    type=str,
+    choices=["none", "soft", "hard"],
+    help='association rule filter mode: none / soft / hard'
+)
+parser.add_argument(
+    '--rule_support',
+    default=-1.0,
+    type=float,
+    help='override minimum support for frequent itemsets (<=0 使用默认值)'
+)
+parser.add_argument(
+    '--rule_confidence',
+    default=-1.0,
+    type=float,
+    help='override minimum confidence for association rules (<=0 使用默认值)'
+)
+parser.add_argument(
+    '--rule_max_size',
+    default=0,
+    type=int,
+    help='override maximum itemset size used for mining (<=0 使用默认值)'
+)
+parser.add_argument(
+    '--rule_penalty',
+    default=-1.0,
+    type=float,
+    help='override penalty weight in soft mode (<=0 使用默认值)'
+)
 #-------------------------------------------------------------------------------------------------------------#
 args = parser.parse_args()
 
@@ -130,6 +169,7 @@ file_path = compute_output_dir(args.random_mode, args.path)
 
 # limit_line = len(ori_numpy)
 limit_line = args.limit_line
+rule_filter = None
 ori_avg_rate = [0.05, 0.05, 0.05, 0.05, 0.01, 0.05]
 ori_shiftings_list = [ori_avg_rate] * 10
 rate_file = "./kl8_rate.csv"
@@ -560,6 +600,33 @@ def check_rate(result_list):
     
     return 99, True
 
+
+def evaluate_rule_penalty(numbers):
+    """执行关联规则过滤，返回是否通过、惩罚值与触发规则。"""
+
+    if rule_filter is None:
+        return True, 0.0, []
+    evaluation = rule_filter.evaluate(numbers)
+    return evaluation.accepted, evaluation.penalty, evaluation.violated_rules
+
+
+def append_result_with_rules(results_list, shiftings_list, base_shifting, numbers):
+    """
+    封装组合登记逻辑，自动应用规则惩罚。
+
+    返回 (是否成功, 惩罚值, 触发规则列表)。
+    """
+
+    accepted, penalty, violations = evaluate_rule_penalty(numbers)
+    if not accepted:
+        return False, penalty, violations
+    penalised = list(base_shifting)
+    if penalty > 0:
+        penalised = [value + penalty for value in penalised]
+    results_list.append(list(numbers))
+    shiftings_list.append(penalised)
+    return True, penalty, violations
+
 ## 判断文件夹是否存在，不存在就创建
 def check_dir(path):
     ensure_dir(path)
@@ -727,9 +794,26 @@ def sub_process(i):
                 err_code, check_result = check_rate([current_result])
                 if check_result:
                     with results_lock:
-                        results.append(current_result[1:])
-                        shiftings.append(shifting)
-                    return results, shiftings, shifting, start_time
+                        success, penalty, violations = append_result_with_rules(
+                            results,
+                            shiftings,
+                            shifting,
+                            current_result[1:],
+                        )
+                    if success:
+                        if args.simple_mode == 0 and penalty > 0:
+                            logger.debug(
+                                "高级模式组合触发软规则惩罚：{} penalty={:.3f}",
+                                current_result[1:],
+                                penalty,
+                            )
+                        return results, shiftings, shifting, start_time
+                    if args.simple_mode == 0 and violations:
+                        logger.debug(
+            "高级模式组合被规则过滤淘汰：{} -> {} 条规则",
+            current_result[1:],
+            len(violations),
+        )
         except Exception as e:
             logger.warning(f"高级算法失败，使用原始算法: {e}")
     
@@ -747,7 +831,17 @@ def sub_process(i):
             
         err_code, check_result = check_rate([current_result])
         if check_result:
-            break
+            accepted, pen, violations = evaluate_rule_penalty(current_result[1:])
+            if accepted:
+                break
+            if args.simple_mode == 0 and violations:
+                logger.debug(
+                    "规则过滤淘汰组合：{} -> {} 条规则",
+                    current_result[1:],
+                    len(violations),
+                )
+            current_result = [0]
+            continue
         # err_results.append(current_result)
         current_result = [0]
         if err_code > -1:
@@ -854,8 +948,26 @@ def sub_process(i):
             #     write_file(sorted_results, "result")
     
     with results_lock:
-        results.append(current_result[1:])
-        shiftings.append(shifting)
+        success, penalty, violations = append_result_with_rules(
+            results,
+            shiftings,
+            shifting,
+            current_result[1:],
+        )
+    if not success:
+        if args.simple_mode == 0 and violations:
+            logger.debug(
+                "标准模式组合被规则过滤淘汰：{} -> {} 条规则",
+                current_result[1:],
+                len(violations),
+            )
+        return None
+    if args.simple_mode == 0 and penalty > 0:
+        logger.debug(
+            "标准模式组合触发软规则惩罚：{} penalty={:.3f}",
+            current_result[1:],
+            penalty,
+        )
     shifting = [round(num, 3) for num in shifting]
     return results, shiftings, shifting, start_time
 
@@ -877,6 +989,29 @@ if __name__ == "__main__":
     if args.current_nums > 0 and args.current_nums >= ori_numpy[-1][0] and args.current_nums <= ori_numpy[0][0]:
         index_diff = ori_numpy[0][0] - args.current_nums + 1
         ori_numpy = ori_numpy[index_diff:]
+    
+    if args.rule_filter in {"soft", "hard"}:
+        global rule_filter
+        filter_kwargs = {}
+        if args.rule_support > 0:
+            filter_kwargs["min_support"] = args.rule_support
+        if args.rule_confidence > 0:
+            filter_kwargs["min_confidence"] = args.rule_confidence
+        if args.rule_max_size > 0:
+            filter_kwargs["max_itemset_size"] = args.rule_max_size
+        if args.rule_penalty >= 0:
+            filter_kwargs["penalty_weight"] = args.rule_penalty
+        try:
+            rule_filter = build_rule_filter(
+                draws=ori_data.to_numpy(),
+                lottery_code=name,
+                limit=limit_line,
+                mode=args.rule_filter,
+                **filter_kwargs,
+            )
+        except Exception as exc:
+            logger.warning("关联规则挖掘初始化失败，将禁用规则过滤：{}", exc)
+            rule_filter = None
     
     check_dir(file_path)
     last_time = ""

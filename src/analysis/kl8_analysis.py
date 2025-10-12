@@ -73,6 +73,14 @@ except Exception:
         if str(PROJECT_ROOT) not in sys.path:
             sys.path.insert(0, str(PROJECT_ROOT))
     from src.analysis.shared_download import ensure_data_available  # type: ignore
+try:
+    from .rule_miner import build_rule_filter  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.rule_miner import build_rule_filter  # type: ignore
 from itertools import combinations
 from loguru import logger
 
@@ -101,6 +109,37 @@ parser.add_argument(
     type=str,
     help='feature ranking mode: hybrid / momentum / cooccurrence'
 )
+parser.add_argument(
+    '--rule_filter',
+    default="none",
+    type=str,
+    choices=["none", "soft", "hard"],
+    help='association rule filter mode: none / soft / hard'
+)
+parser.add_argument(
+    '--rule_support',
+    default=-1.0,
+    type=float,
+    help='override minimum support for frequent itemsets (<=0 使用默认值)'
+)
+parser.add_argument(
+    '--rule_confidence',
+    default=-1.0,
+    type=float,
+    help='override minimum confidence for association rules (<=0 使用默认值)'
+)
+parser.add_argument(
+    '--rule_max_size',
+    default=0,
+    type=int,
+    help='override maximum itemset size used for mining (<=0 使用默认值)'
+)
+parser.add_argument(
+    '--rule_penalty',
+    default=-1.0,
+    type=float,
+    help='override penalty weight in soft mode (<=0 使用默认值)'
+)
 args = parser.parse_args()
 
 current_time = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
@@ -119,6 +158,29 @@ file_path = compute_output_dir(args.random_mode, args.path)
 
 # limit_line = len(ori_numpy)
 limit_line = args.limit_line
+rule_filter = None
+if args.rule_filter in {"soft", "hard"}:
+    filter_kwargs = {}
+    if args.rule_support > 0:
+        filter_kwargs["min_support"] = args.rule_support
+    if args.rule_confidence > 0:
+        filter_kwargs["min_confidence"] = args.rule_confidence
+    if args.rule_max_size > 0:
+        filter_kwargs["max_itemset_size"] = args.rule_max_size
+    if args.rule_penalty >= 0:
+        filter_kwargs["penalty_weight"] = args.rule_penalty
+    try:
+        rule_filter = build_rule_filter(
+            draws=ori_data.to_numpy(),
+            lottery_code=name,
+            limit=limit_line,
+            mode=args.rule_filter,
+            **filter_kwargs,
+        )
+    except Exception as exc:
+        logger.warning("关联规则挖掘初始化失败，将自动降级为不启用：{}", exc)
+        rule_filter = None
+
 ori_avg_rate = [0.05, 0.05, 0.05, 0.05, 0.01, 0.05]
 ori_shiftings_list = [ori_avg_rate] * 10
 rate_file = "./kl8_rate.csv"
@@ -681,6 +743,33 @@ def check_rate(result_list):
         return 5, False    
     
     return 99, True
+
+
+def evaluate_rule_penalty(numbers):
+    """执行关联规则过滤，返回是否通过、惩罚值与触发规则。"""
+
+    if rule_filter is None:
+        return True, 0.0, []
+    evaluation = rule_filter.evaluate(numbers)
+    return evaluation.accepted, evaluation.penalty, evaluation.violated_rules
+
+
+def append_result_with_rules(results_list, shiftings_list, base_shifting, numbers):
+    """
+    封装组合登记逻辑，自动应用规则惩罚。
+
+    返回 (是否成功, 惩罚值, 触发规则列表)。
+    """
+
+    accepted, penalty, violations = evaluate_rule_penalty(numbers)
+    if not accepted:
+        return False, penalty, violations
+    penalised = list(base_shifting)
+    if penalty > 0:
+        penalised = [value + penalty for value in penalised]
+    results_list.append(list(numbers))
+    shiftings_list.append(penalised)
+    return True, penalty, violations
 
 ## 判断文件夹是否存在，不存在就创建（兼容旧名）
 def check_dir(path):
@@ -1419,11 +1508,29 @@ if __name__ == "__main__":
                                 sorted_results, sorted_shiftings = zip(*sorted_results)
                                 sorted_results = list(sorted_results)
                                 write_file(sorted_results, "result")
-                    results.append(current_result[1:])
-                    shiftings.append(shifting)
+                    success, penalty, violations = append_result_with_rules(
+                        results,
+                        shiftings,
+                        shifting,
+                        current_result[1:],
+                    )
+                    if not success:
+                        if args.simple_mode == 0 and violations:
+                            tqdm.write(
+                                "规则过滤淘汰组合 {} -> 触发 {} 条规则".format(
+                                    [num for num in current_result[1:]], len(violations)
+                                )
+                            )
+                        continue
                     shifting = [round(num, 3) for num in shifting]
                     if args.simple_mode == 0:
-                        tqdm.write("{current_result} {shifting}".format(current_result=[num for num in current_result[1:]], shifting=[round(num, 3) for num in shifting]))
+                        msg = "{current_result} {shifting}".format(
+                            current_result=[num for num in current_result[1:]],
+                            shifting=[round(num, 3) for num in shifting],
+                        )
+                        if penalty > 0:
+                            msg += f" rule_penalty={penalty:.3f}"
+                        tqdm.write(msg)
                     pbar.update(1)
                 pbar.close()
                 avg_rate = [round(sum(col) / len(col), 3) for col in zip(*shiftings)]     
@@ -1467,10 +1574,27 @@ if __name__ == "__main__":
                         # 验证高级解是否符合约束
                         err_code, check_result = check_rate([current_result])
                         if check_result:
-                            results.append(current_result[1:])
-                            shiftings.append(shifting)
+                            success, penalty, violations = append_result_with_rules(
+                                results,
+                                shiftings,
+                                shifting,
+                                current_result[1:],
+                            )
+                            if not success:
+                                if args.simple_mode == 0 and violations:
+                                    tqdm.write(
+                                        "规则过滤淘汰高级解 {} -> 触发 {} 条规则".format(
+                                            [num for num in current_result[1:]], len(violations)
+                                        )
+                                    )
+                                continue
                             if args.simple_mode == 0:
-                                tqdm.write("Advanced: {current_result}".format(current_result=[num for num in current_result[1:]]))
+                                msg = "Advanced: {current_result}".format(
+                                    current_result=[num for num in current_result[1:]]
+                                )
+                                if penalty > 0:
+                                    msg += f" rule_penalty={penalty:.3f}"
+                                tqdm.write(msg)
                             pbar.update(1)
                             continue
                 
@@ -1612,11 +1736,29 @@ if __name__ == "__main__":
                             sorted_results, sorted_shiftings = zip(*sorted_results)
                             sorted_results = list(sorted_results)
                             write_file(sorted_results, "result")
-                results.append(current_result[1:])
-                shiftings.append(shifting)
+                success, penalty, violations = append_result_with_rules(
+                    results,
+                    shiftings,
+                    shifting,
+                    current_result[1:],
+                )
+                if not success:
+                    if args.simple_mode == 0 and violations:
+                        tqdm.write(
+                            "规则过滤淘汰组合 {} -> 触发 {} 条规则".format(
+                                [num for num in current_result[1:]], len(violations)
+                            )
+                        )
+                    continue
                 shifting = [round(num, 3) for num in shifting]
                 if args.simple_mode == 0:
-                    tqdm.write("{current_result} {shifting}".format(current_result=[num for num in current_result[1:]], shifting=[round(num, 3) for num in shifting]))
+                    msg = "{current_result} {shifting}".format(
+                        current_result=[num for num in current_result[1:]],
+                        shifting=[round(num, 3) for num in shifting],
+                    )
+                    if penalty > 0:
+                        msg += f" rule_penalty={penalty:.3f}"
+                    tqdm.write(msg)
                 pbar.update(1)
             sorted_results = sorted(zip(results, shiftings), key=lambda x: x[1])
             sorted_results, sorted_shiftings = zip(*sorted_results)

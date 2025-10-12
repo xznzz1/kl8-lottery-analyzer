@@ -32,6 +32,7 @@ PATHS = {
     "data": Path(YAML_CONFIG.get("paths", {}).get("data", BASE_DIR / "data")).resolve(),
     "results": Path(YAML_CONFIG.get("paths", {}).get("results", BASE_DIR / "results")).resolve(),
     "logs": Path(YAML_CONFIG.get("paths", {}).get("logs", BASE_DIR / "logs")).resolve(),
+    "data_cache": Path(YAML_CONFIG.get("paths", {}).get("data_cache", BASE_DIR / "data_cache")).resolve(),
 }
 
 NETWORK_CONFIG = {
@@ -49,6 +50,24 @@ ALLOWED_DOMAINS = {"datachart.500.com", "data.917500.cn"}
 
 DATA_FILE_NAME = "data.csv"
 MODEL_METADATA_FILE = "metadata.json"
+
+_ANALYSIS_SECTION = YAML_CONFIG.get("analysis", {})
+_DIRICHLET_SECTION = _ANALYSIS_SECTION.get("dirichlet", {})
+_RULE_SECTION = _ANALYSIS_SECTION.get("rules", {})
+
+DIRICHLET_CONFIG = {
+    "prior_strength": float(_DIRICHLET_SECTION.get("prior_strength", 0.5)),
+    "window_size": int(_DIRICHLET_SECTION.get("window_size", 120)),
+    "variance_weight": float(_DIRICHLET_SECTION.get("variance_weight", 0.3)),
+}
+
+RULE_MINER_CONFIG = {
+    "min_support": float(_RULE_SECTION.get("min_support", 0.08)),
+    "min_confidence": float(_RULE_SECTION.get("min_confidence", 0.6)),
+    "max_itemset_size": int(_RULE_SECTION.get("max_itemset_size", 3)),
+    "cache_ttl_seconds": int(_RULE_SECTION.get("cache_ttl_seconds", 24 * 60 * 60)),
+    "soft_penalty_weight": float(_RULE_SECTION.get("soft_penalty_weight", 0.4)),
+}
 
 
 @dataclass(frozen=True)
@@ -126,6 +145,8 @@ __all__ = [
     "LotteryModelConfig",
     "LOTTERY_CONFIGS",
     "MODEL_METADATA_FILE",
+    "DIRICHLET_CONFIG",
+    "RULE_MINER_CONFIG",
     "NETWORK_CONFIG",
     "PATHS",
     "SequenceModelSpec",

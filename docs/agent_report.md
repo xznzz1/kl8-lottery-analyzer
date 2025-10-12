@@ -1,5 +1,11 @@
 # 本次自动执行报告 | Automation Execution Report
 
+## 2025-10-13 Dirichlet 平滑与规则筛选
+- 引入 Dirichlet-Multinomial 后验得分，优化特征融合表现，新增配置项 `config.analysis.dirichlet`。
+- 开发 `src/analysis/rule_miner.py`，基于 FP-Growth 缓存频繁项集并提供 `--rule_filter` 软/硬模式。
+- `kl8_analysis*.py` 支持规则惩罚与 CLI 参数（`--rule_support`、`--rule_confidence` 等），并更新 README/文档。
+- 新增 `tests/test_rule_miner.py` 验证硬/软模式，覆盖违规组合与惩罚权重。
+
 ## 需求摘要 | Requirement Summary
 - 背景与目标 | Background & objectives:
   - **核心需求**：修改Plus多线程逻辑，当download=1时仅启动一个线程下载，然后再用多线程处理数据

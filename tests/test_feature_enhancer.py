@@ -40,6 +40,11 @@ def test_compute_enhanced_scores_returns_ranked_list():
     ranked, debug = compute_enhanced_scores(draws, limit=40, recent_window=25, reference_window=35)
     assert len(ranked) == 80
     assert isinstance(debug, FeatureDebugInfo)
+    assert len(debug.dirichlet_scores) == 80
+    sample_key = next(iter(debug.dirichlet_scores))
+    assert 0.0 <= debug.dirichlet_scores[sample_key] <= 1.0
+    assert len(debug.dirichlet_mean) == 80
+    assert len(debug.dirichlet_variance) == 80
     # 检查排序单调性
     for i in range(len(ranked) - 1):
         assert ranked[i][1] >= ranked[i + 1][1]

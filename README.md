@@ -9,6 +9,7 @@
 - 📦 `src/common.py`：统一封装数据下载、期号查询与历史数据加载。
 - 🌐 `src/data_fetcher.py`：带域名白名单与重试机制的抓取器。
 - 🎯 `src/analysis/feature_enhancer.py`（新增）：基于“近期动量 + 共现谱分析”的特征增强引擎，统一在 `--feature_mode` 参数下启用。
+- 🧮 `src/analysis/rule_miner.py`（新增）：FP-Growth 动态挖掘频繁项集，`--rule_filter` 支持软/硬模式线上筛选组合。
 - 📊 `src/analysis/*.py`：原始版 / Plus 版分析与收益脚本，支持高级算法与多线程。
 - 🧪 `tests/`：覆盖配置、公共接口、特征增强及抓取模块的 Pytest 用例。
 
@@ -41,6 +42,13 @@ python src/analysis/kl8_analysis.py --advanced_mode 1 --feature_mode cooccurrenc
 | `momentum` | 强调最近窗口与长期窗口的频次差 | 想捕捉短期趋势时 |
 | `cooccurrence` | 聚焦号码共现谱的主特征向量 | 关注号码关联度时 |
 
+### 关联规则筛选
+```bash
+python src/analysis/kl8_analysis.py --cal_nums 10 --total_create 200 --limit_line 200 --advanced_mode 2 --feature_mode hybrid --rule_filter soft --rule_support 0.6 --rule_confidence 0.8
+```
+- `--rule_filter hard`：不满足高信心度规则的组合直接从候选集中移除。
+- `--rule_filter soft`：对规则出现的组合附加罚值，保留多样性的同时拉差等级。
+- 关联门值和项集范围可使用 `config.analysis.rules` 配置或 CLI 参数覆盖。
 ## 目录结构
 ```
 .
@@ -137,6 +145,7 @@ python src/analysis/kl8_running.py \
 
 ## 亮点
 - 🔄 全新特征增强引擎，支持动量、共现谱、PCA主成分等多种特征融合
+- 🧮 Dirichlet 平滑 + FP-Growth 关联规则：`feature_enhancer` \u63d0\u4f9b Dirichlet-Multinomial \u5f3a\u5316\u6e90\uff0c`rule_miner` \u5b9e\u65f6\u534f\u52a9 \u8fc7\u6ee4\u9ad8\u98ce\u9669\u7ec4\u5408
 - 📊 原始版与 Plus 版分析脚本，支持多线程与高级算法
 - 🧪 完善的测试覆盖与 CI/CD 流程
 - 📚 详尽的文档与使用示例

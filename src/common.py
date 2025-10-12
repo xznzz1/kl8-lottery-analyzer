@@ -19,6 +19,8 @@ from loguru import logger
 from torch import nn
 from .config import name_path, data_file_name, data_cq_file_name, model_path, model_args, red_ball_model_name, blue_ball_model_name, ball_name, result_path
 
+SUPPORTED_LOTTERIES = {"kl8"}
+
 # 兼容新版数据获取模块（仅支持 kl8）
 try:
     from .data_fetcher import download_history as _df_download_history  # type: ignore
@@ -26,6 +28,88 @@ try:
 except Exception:
     _df_download_history = None
     _df_get_current_issue = None
+
+
+def _ensure_supported_lottery(code: str) -> None:
+    if code not in SUPPORTED_LOTTERIES:
+        raise ValueError(f"当前仅支持快乐8玩法，收到：{code}")
+
+
+def download_history(
+    code: str,
+    start: int | str | None = None,
+    end: int | str | None = None,
+    use_sequence_order: bool = False,
+):
+    """
+    下载历史数据的统一入口，优先调用 data_fetcher，失败时回退到内置爬虫。
+    """
+    _ensure_supported_lottery(code)
+
+    if _df_download_history is not None:
+        try:
+            return _df_download_history(
+                code,
+                start=start,
+                end=end,
+                use_sequence_order=use_sequence_order,
+            )
+        except Exception as exc:  # pragma: no cover - fallback 分支
+            logger.warning("download_history 回退内置爬虫，原因：{}", exc)
+
+    def _coerce_issue(value, default):
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    start_issue = _coerce_issue(start, 1)
+    end_issue = _coerce_issue(end, 999999)
+    if code == "kl8" and use_sequence_order:
+        return spider_cq(name=code, start=start_issue, end=end_issue, mode="train")
+    return spider(name=code, start=start_issue, end=end_issue, mode="train")
+
+
+def _scrape_current_issue(code: str) -> str:
+    url, _ = get_url(code)
+    try:
+        if code in ["qxc", "pls"]:
+            response = get_http_session_with_backoff(
+                "{}{}".format(url, "inc/history.php"), timeout=10
+            )
+        elif code in ["ssq", "dlt"]:
+            response = get_http_session_with_backoff(
+                "{}{}".format(url, "history.shtml"), timeout=10
+            )
+        elif code in ["kl8"]:
+            response = get_http_session_with_backoff(
+                "{}{}".format(url, "newinc/jbzs_redblue.php"), timeout=10
+            )
+        else:
+            raise ValueError(f"未知的彩票类型：{code}")
+    except Exception as exc:
+        logger.warning("请求期号失败({})，请检查网络或稍后重试", exc)
+        raise
+    response.encoding = "gb2312"
+    soup = BeautifulSoup(response.text, "lxml")
+    if code in ["kl8"]:
+        return soup.find("div", class_="wrap_datachart").find("input", id="to")["value"]
+    return soup.find("div", class_="wrap_datachart").find("input", id="end")["value"]
+
+
+def get_current_issue(code: str) -> str:
+    """
+    获取指定玩法的最新期号，优先使用 data_fetcher，失败时回退页面抓取。
+    """
+    _ensure_supported_lottery(code)
+    if _df_get_current_issue is not None:
+        try:
+            return _df_get_current_issue(code)
+        except Exception as exc:  # pragma: no cover - fallback 分支
+            logger.warning("get_current_issue 回退页面抓取，原因：{}", exc)
+    return _scrape_current_issue(code)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -150,7 +234,7 @@ class FocalLoss(nn.Module):
         self.alpha = alpha
 
     def forward(self, inputs, targets):
-        # 输入：inputs (模型预测，shape: [batch_size, num_classes]), 
+        # 输入：inputs (模型预测，shape: [batch_size, num_classes]),
         # targets (真实标签，shape: [batch_size, num_classes], 独热编码)
 
         BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
@@ -211,7 +295,7 @@ def create_train_data(name, windows, dataset=0, ball_type="red", cq=0, test_flag
         for item in _data:
            _tmp.append([item])
         tmp.append(_tmp)
-    data = np.array(tmp)       
+    data = np.array(tmp)
     cut_num = model_args[name]["model_args"]["red_sequence_len"]
     if dataset == 0:
         x_data, y_data = [], []
@@ -330,7 +414,7 @@ def spider_cq(name="kl8", start=1, end=999999, mode="train", seq_len=0):
             # item[u"id"] = line[0]
             strdate = line[1].split('-')
             item[u"日期"] = strdate[0] + strdate[1] + strdate[2]
-            item[u"期数"] = line[0]  
+            item[u"期数"] = line[0]
             for i in range(1, 21):
                 item[u"红球_{}".format(i)] = line[i + 1]
             data.append(item)
@@ -345,7 +429,7 @@ def spider_cq(name="kl8", start=1, end=999999, mode="train", seq_len=0):
             else:
                 raise Exception()
         except Exception:
-            ori_data = pd.read_csv("{}{}".format(syspath, data_cq_file_name))  
+            ori_data = pd.read_csv("{}{}".format(syspath, data_cq_file_name))
         data = []
         if seq_len > 0:
             ori_data = ori_data[0:seq_len]
@@ -446,7 +530,7 @@ def spider(name="ssq", start=1, end=999999, mode="train", seq_len=0):
             else:
                 raise Exception()
         except Exception:
-            ori_data = pd.read_csv("{}{}".format(syspath, data_file_name))  
+            ori_data = pd.read_csv("{}{}".format(syspath, data_file_name))
         data = []
         if seq_len > 0:
             ori_data = ori_data[0:seq_len]

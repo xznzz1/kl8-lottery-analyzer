@@ -1,5 +1,16 @@
 # Changelog
 All notable changes to this project will be documented in this file.
+## [1.3.0] - 2025-10-13 🧠 Dirichlet 平滑与规则筛选
+### Added
+- `compute_enhanced_scores` 新增 Dirichlet-Multinomial 后验通道，权重可通过 `config.analysis.dirichlet` 配置。
+- 新增 `src/analysis/rule_miner.py`，支持 FP-Growth 频繁项集缓存与 `--rule_filter` 软/硬模式。
+- 新增 `tests/test_rule_miner.py` 覆盖软/硬模式评估逻辑。
+### Changed
+- `kl8_analysis.py` 与 `kl8_analysis_plus.py` 融合 Dirichlet 得分并接入规则惩罚，暴露 `--rule_support`、`--rule_confidence` 等参数。
+### Documentation
+- 更新 README、docs/api.md、docs/decision_record.md、ASSUMPTIONS.md，补充 Dirichlet 配置与规则筛选示例。
+
+
 
 ## [1.2.3] - 2025-10-12 🛠️ 相对导入问题全面修复
 ### Fixed
