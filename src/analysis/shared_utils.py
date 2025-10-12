@@ -124,8 +124,17 @@ def write_results_async(
     current_time_str: str,
     backend: str = "thread",
 ) -> None:
-    """异步写入结果文件。backend 支持 'thread' 或 'process'。"""
-    target = lambda: write_results_core(
+    """
+    异步写入结果文件。
+
+    注意：为兼容 Windows 上的 multiprocessing（spawn 启动方式），目标函数必须
+    是顶层可 picklable 的可调用，不能使用 lambda/闭包。
+
+    backend 支持：
+    - 'thread'：使用 threading.Thread，适用于 I/O 为主（默认）。
+    - 'process'：使用 multiprocessing.Process，避免 GIL 影响。
+    """
+    target_args = (
         rows,
         file_dir,
         file_prefix,
@@ -137,8 +146,8 @@ def write_results_async(
         current_time_str,
     )
     if backend == "process":
-        p = Process(target=target)
+        p = Process(target=write_results_core, args=target_args)
         p.start()
     else:
-        t = threading.Thread(target=target)
+        t = threading.Thread(target=write_results_core, args=target_args)
         t.start()
