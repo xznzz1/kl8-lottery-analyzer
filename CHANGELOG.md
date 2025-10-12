@@ -1,125 +1,138 @@
-# Changelog
+﻿# Changelog
 All notable changes to this project will be documented in this file.
-## [1.3.0] - 2025-10-13 🧠 Dirichlet 平滑与规则筛选
+## [1.4.0] - 2025-10-14 🎲 Copula 采样与图嵌入融合
 ### Added
-- `compute_enhanced_scores` 新增 Dirichlet-Multinomial 后验通道，权重可通过 `config.analysis.dirichlet` 配置。
-- 新增 `src/analysis/rule_miner.py`，支持 FP-Growth 频繁项集缓存与 `--rule_filter` 软/硬模式。
-- 新增 `tests/test_rule_miner.py` 覆盖软/硬模式评估逻辑。
+- 新增 `src/analysis/copula_sampler.py` 与 `generate_copula_candidates`，在高级模式中提供 Copula 多样性采样。
+- 新增 `scripts/train_graph_embeddings.py`（PyTorch Node2Vec），支持 `--device auto`，输出嵌入缓存。
+- 新增 `src/analysis/mutual_information.py`，在高级评分阶段引入互信息多样性惩罚。
+- 新增测试 `tests/test_copula_sampler.py`、`tests/test_mutual_information.py`，并扩展 `test_feature_enhancer.py`。
 ### Changed
-- `kl8_analysis.py` 与 `kl8_analysis_plus.py` 融合 Dirichlet 得分并接入规则惩罚，暴露 `--rule_support`、`--rule_confidence` 等参数。
+- `feature_enhancer` 融合 `graph_embedding_scores`，输出调试字段并提供缓存清理函数。
+- `advanced_number_generation` 集成 Copula 候选与互信息扣分；Makefile 增加 `train-graph` 目标。
+- `config/config.yaml` 补充 `analysis.copula`、`analysis.graph_embedding` 默认配置，CLI 允许覆盖。
 ### Documentation
-- 更新 README、docs/api.md、docs/decision_record.md、ASSUMPTIONS.md，补充 Dirichlet 配置与规则筛选示例。
+- 更新 README、`docs/kl8_algorithm_extension_report.md`、`docs/decision_record.md`、`ASSUMPTIONS.md`、`docs/api.md`、`agent_report.md`，补充 Copula/图嵌入说明。
+
+## [1.3.0] - 2025-10-13 馃 Dirichlet 骞虫粦涓庤鍒欑瓫閫?
+### Added
+- `compute_enhanced_scores` 鏂板 Dirichlet-Multinomial 鍚庨獙閫氶亾锛屾潈閲嶅彲閫氳繃 `config.analysis.dirichlet` 閰嶇疆銆?
+- 鏂板 `src/analysis/rule_miner.py`锛屾敮鎸?FP-Growth 棰戠箒椤归泦缂撳瓨涓?`--rule_filter` 杞?纭ā寮忋€?
+- 鏂板 `tests/test_rule_miner.py` 瑕嗙洊杞?纭ā寮忚瘎浼伴€昏緫銆?
+### Changed
+- `kl8_analysis.py` 涓?`kl8_analysis_plus.py` 铻嶅悎 Dirichlet 寰楀垎骞舵帴鍏ヨ鍒欐儵缃氾紝鏆撮湶 `--rule_support`銆乣--rule_confidence` 绛夊弬鏁般€?
+### Documentation
+- 鏇存柊 README銆乨ocs/api.md銆乨ocs/decision_record.md銆丄SSUMPTIONS.md锛岃ˉ鍏?Dirichlet 閰嶇疆涓庤鍒欑瓫閫夌ず渚嬨€?
 
 
 
-## [1.2.3] - 2025-10-12 🛠️ 相对导入问题全面修复
+## [1.2.3] - 2025-10-12 馃洜锔?鐩稿瀵煎叆闂鍏ㄩ潰淇
 ### Fixed
-- **相对导入错误修复**：修复所有可独立运行脚本的相对导入问题，确保脚本可以直接运行
-  - `kl8_analysis.py`：修复7个analysis_metrics导入和1个shared_utils导入
-  - `kl8_analysis_plus.py`：修复6个analysis_metrics导入和1个shared_utils导入
-  - `analysis_metrics.py`：修复shared_utils导入
-- **导入策略统一**：所有修复都采用try-except模式，优先相对导入，失败时回退到绝对导入
-- **脚本直接运行支持**：确保所有分析脚本都可以作为独立程序运行，无需包结构
+- **鐩稿瀵煎叆閿欒淇**锛氫慨澶嶆墍鏈夊彲鐙珛杩愯鑴氭湰鐨勭浉瀵瑰鍏ラ棶棰橈紝纭繚鑴氭湰鍙互鐩存帴杩愯
+  - `kl8_analysis.py`锛氫慨澶?涓猘nalysis_metrics瀵煎叆鍜?涓猻hared_utils瀵煎叆
+  - `kl8_analysis_plus.py`锛氫慨澶?涓猘nalysis_metrics瀵煎叆鍜?涓猻hared_utils瀵煎叆
+  - `analysis_metrics.py`锛氫慨澶峴hared_utils瀵煎叆
+- **瀵煎叆绛栫暐缁熶竴**锛氭墍鏈変慨澶嶉兘閲囩敤try-except妯″紡锛屼紭鍏堢浉瀵瑰鍏ワ紝澶辫触鏃跺洖閫€鍒扮粷瀵瑰鍏?
+- **鑴氭湰鐩存帴杩愯鏀寔**锛氱‘淇濇墍鏈夊垎鏋愯剼鏈兘鍙互浣滀负鐙珛绋嬪簭杩愯锛屾棤闇€鍖呯粨鏋?
 
 ### Validated
-- ✅ `kl8_analysis.py` - 可正常直接运行，advanced_mode 2 和 feature_mode hybrid 工作正常
-- ✅ `kl8_analysis_plus.py` - 导入错误已修复，可正常显示帮助信息
-- ✅ `kl8_cash.py`, `kl8_cash_plus.py`, `kl8_running.py` - 确认无导入问题
-- ✅ 所有模块都可以正常作为包导入使用
+- 鉁?`kl8_analysis.py` - 鍙甯哥洿鎺ヨ繍琛岋紝advanced_mode 2 鍜?feature_mode hybrid 宸ヤ綔姝ｅ父
+- 鉁?`kl8_analysis_plus.py` - 瀵煎叆閿欒宸蹭慨澶嶏紝鍙甯告樉绀哄府鍔╀俊鎭?
+- 鉁?`kl8_cash.py`, `kl8_cash_plus.py`, `kl8_running.py` - 纭鏃犲鍏ラ棶棰?
+- 鉁?鎵€鏈夋ā鍧楅兘鍙互姝ｅ父浣滀负鍖呭鍏ヤ娇鐢?
 
 ### Technical Details
-- 修复ImportError: "attempted relative import with no known parent package"
-- 保持向后兼容性，模块导入和脚本直接运行都支持
-- 采用统一的错误处理模式，确保代码一致性
+- 淇ImportError: "attempted relative import with no known parent package"
+- 淇濇寔鍚戝悗鍏煎鎬э紝妯″潡瀵煎叆鍜岃剼鏈洿鎺ヨ繍琛岄兘鏀寔
+- 閲囩敤缁熶竴鐨勯敊璇鐞嗘ā寮忥紝纭繚浠ｇ爜涓€鑷存€?
 
-## [1.2.2] - 2025-01-25 🚀 ThreadPoolExecutor升级与测试完善
+## [1.2.2] - 2025-01-25 馃殌 ThreadPoolExecutor鍗囩骇涓庢祴璇曞畬鍠?
 ### Changed
-- **ThreadPoolExecutor升级**：将 `kl8_running.py` 从基础 `threading.Thread` 升级为 `concurrent.futures.ThreadPoolExecutor`
-- **改进的资源控制**：更好的线程池管理和异常处理，使用 `as_completed()` 实现更优雅的任务进度跟踪
-- **增强的错误处理**：添加失败任务统计和详细错误报告
+- **ThreadPoolExecutor鍗囩骇**锛氬皢 `kl8_running.py` 浠庡熀纭€ `threading.Thread` 鍗囩骇涓?`concurrent.futures.ThreadPoolExecutor`
+- **鏀硅繘鐨勮祫婧愭帶鍒?*锛氭洿濂界殑绾跨▼姹犵鐞嗗拰寮傚父澶勭悊锛屼娇鐢?`as_completed()` 瀹炵幇鏇翠紭闆呯殑浠诲姟杩涘害璺熻釜
+- **澧炲己鐨勯敊璇鐞?*锛氭坊鍔犲け璐ヤ换鍔＄粺璁″拰璇︾粏閿欒鎶ュ憡
 
 ### Added
-- **完整测试覆盖**：为所有共享工具模块添加单元测试（`test_shared_utils.py`, `test_shared_download.py`, `test_kl8_running.py`）
-- **ThreadPoolExecutor测试**：验证并发执行、任务分发和错误处理的专门测试
-- **性能文档更新**：在 README 和 docs 中添加详细的 max_workers 配置指南和性能表
+- **瀹屾暣娴嬭瘯瑕嗙洊**锛氫负鎵€鏈夊叡浜伐鍏锋ā鍧楁坊鍔犲崟鍏冩祴璇曪紙`test_shared_utils.py`, `test_shared_download.py`, `test_kl8_running.py`锛?
+- **ThreadPoolExecutor娴嬭瘯**锛氶獙璇佸苟鍙戞墽琛屻€佷换鍔″垎鍙戝拰閿欒澶勭悊鐨勪笓闂ㄦ祴璇?
+- **鎬ц兘鏂囨。鏇存柊**锛氬湪 README 鍜?docs 涓坊鍔犺缁嗙殑 max_workers 閰嶇疆鎸囧崡鍜屾€ц兘琛?
 
 ### Fixed
-- **代码质量提升**：消除新共享模块的lint警告，确保所有新代码达到严格质量标准
-- **测试稳定性**：修复函数签名不匹配问题，确保测试与实际实现一致
+- **浠ｇ爜璐ㄩ噺鎻愬崌**锛氭秷闄ゆ柊鍏变韩妯″潡鐨刲int璀﹀憡锛岀‘淇濇墍鏈夋柊浠ｇ爜杈惧埌涓ユ牸璐ㄩ噺鏍囧噯
+- **娴嬭瘯绋冲畾鎬?*锛氫慨澶嶅嚱鏁扮鍚嶄笉鍖归厤闂锛岀‘淇濇祴璇曚笌瀹為檯瀹炵幇涓€鑷?
 
 ### Documentation
-- 添加 max_workers 性能优化表格和系统配置建议
-- 更新运行指南，包含资源监控和渐进调优策略
+- 娣诲姞 max_workers 鎬ц兘浼樺寲琛ㄦ牸鍜岀郴缁熼厤缃缓璁?
+- 鏇存柊杩愯鎸囧崡锛屽寘鍚祫婧愮洃鎺у拰娓愯繘璋冧紭绛栫暐
 
-## [1.2.1] - 2025-10-11 🔧 Running脚本与自适应阈值优化
+## [1.2.1] - 2025-10-11 馃敡 Running鑴氭湰涓庤嚜閫傚簲闃堝€间紭鍖?
 ### Fixed
-- **kl8_running.py 多线程下载问题**：统一在主线程下载数据，避免并发冲突
-- **目录创建竞争条件**：修复 `os.makedirs` 使用 `exist_ok=True` 参数
-- **文件路径问题**：使用绝对路径定位 plus 版本脚本文件
-- **自适应阈值精度**：完全移除 `shifting_rate` 依赖，使用递减步长+指数平滑逻辑
+- **kl8_running.py 澶氱嚎绋嬩笅杞介棶棰?*锛氱粺涓€鍦ㄤ富绾跨▼涓嬭浇鏁版嵁锛岄伩鍏嶅苟鍙戝啿绐?
+- **鐩綍鍒涘缓绔炰簤鏉′欢**锛氫慨澶?`os.makedirs` 浣跨敤 `exist_ok=True` 鍙傛暟
+- **鏂囦欢璺緞闂**锛氫娇鐢ㄧ粷瀵硅矾寰勫畾浣?plus 鐗堟湰鑴氭湰鏂囦欢
+- **鑷€傚簲闃堝€肩簿搴?*锛氬畬鍏ㄧЩ闄?`shifting_rate` 渚濊禆锛屼娇鐢ㄩ€掑噺姝ラ暱+鎸囨暟骞虫粦閫昏緫
 
 ### Changed
-- `kl8_running.py` 新增 `--download` 参数控制数据下载行为
-- `adaptive_threshold_update` 函数使用衰减步长、指数移动平均和数值裁剪
-- 移除所有 `shifting[err_code] += ...shifting_rate...` 的硬编码逻辑
+- `kl8_running.py` 鏂板 `--download` 鍙傛暟鎺у埗鏁版嵁涓嬭浇琛屼负
+- `adaptive_threshold_update` 鍑芥暟浣跨敤琛板噺姝ラ暱銆佹寚鏁扮Щ鍔ㄥ钩鍧囧拰鏁板€艰鍓?
+- 绉婚櫎鎵€鏈?`shifting[err_code] += ...shifting_rate...` 鐨勭‖缂栫爜閫昏緫
 
 ### Documentation
-- 更新 `kl8_running.py` 的使用说明和参数解释
+- 鏇存柊 `kl8_running.py` 鐨勪娇鐢ㄨ鏄庡拰鍙傛暟瑙ｉ噴
 
-## [1.2.0] - 2025-10-12 特征增强引擎
+## [1.2.0] - 2025-10-12 鐗瑰緛澧炲己寮曟搸
 ### Added
-- 新增 `src/analysis/feature_enhancer.py`，提供近期动量与共现谱的混合评分。
-- `kl8_analysis.py` / `kl8_analysis_plus.py` 支持 `--feature_mode` 参数（`hybrid` / `momentum` / `cooccurrence`）。
-- 新增 `tests/test_feature_enhancer.py`，覆盖空数据、动量与共现得分计算。
+- 鏂板 `src/analysis/feature_enhancer.py`锛屾彁渚涜繎鏈熷姩閲忎笌鍏辩幇璋辩殑娣峰悎璇勫垎銆?
+- `kl8_analysis.py` / `kl8_analysis_plus.py` 鏀寔 `--feature_mode` 鍙傛暟锛坄hybrid` / `momentum` / `cooccurrence`锛夈€?
+- 鏂板 `tests/test_feature_enhancer.py`锛岃鐩栫┖鏁版嵁銆佸姩閲忎笌鍏辩幇寰楀垎璁＄畻銆?
 
 ### Changed
-- 高级号码生成流程叠加特征得分，在候选筛选阶段加入加权评分。
-- Plus 版本在贝叶斯候选排序与补全时引用特征得分，避免单纯随机补位。
+- 楂樼骇鍙风爜鐢熸垚娴佺▼鍙犲姞鐗瑰緛寰楀垎锛屽湪鍊欓€夌瓫閫夐樁娈靛姞鍏ュ姞鏉冭瘎鍒嗐€?
+- Plus 鐗堟湰鍦ㄨ礉鍙舵柉鍊欓€夋帓搴忎笌琛ュ叏鏃跺紩鐢ㄧ壒寰佸緱鍒嗭紝閬垮厤鍗曠函闅忔満琛ヤ綅銆?
 
 ### Documentation
-- 重写 `README.md`、`docs/kl8_usage_guide.md`、`docs/kl8_algorithm_theory.md`、`docs/api.md`，加入特征增强说明与示例。
-- `docs/decision_record.md` 记录特征增强引擎取舍。
+- 閲嶅啓 `README.md`銆乣docs/kl8_usage_guide.md`銆乣docs/kl8_algorithm_theory.md`銆乣docs/api.md`锛屽姞鍏ョ壒寰佸寮鸿鏄庝笌绀轰緥銆?
+- `docs/decision_record.md` 璁板綍鐗瑰緛澧炲己寮曟搸鍙栬垗銆?
 
-## [1.1.0] - 2025-12-19 🚀 多线程架构优化
+## [1.1.0] - 2025-12-19 馃殌 澶氱嚎绋嬫灦鏋勪紭鍖?
 ### Added
-- **多线程优化版本**：新增 `kl8_analysis_plus.py` 和 `kl8_cash_plus.py`
-- **数据下载优化**：实现 `download_data_if_needed()` 函数，主线程单次下载
-- **线程安全机制**：使用 `threading.Lock` 保护共享资源访问
-- **ThreadPoolExecutor架构**：替代多进程，避免全局变量冲突
-- **智能错误处理**：单线程失败不影响整体流程
-- **实时进度监控**：详细的处理状态和性能指标显示
-- **内存优化**：线程共享内存，降低60%内存占用
+- **澶氱嚎绋嬩紭鍖栫増鏈?*锛氭柊澧?`kl8_analysis_plus.py` 鍜?`kl8_cash_plus.py`
+- **鏁版嵁涓嬭浇浼樺寲**锛氬疄鐜?`download_data_if_needed()` 鍑芥暟锛屼富绾跨▼鍗曟涓嬭浇
+- **绾跨▼瀹夊叏鏈哄埗**锛氫娇鐢?`threading.Lock` 淇濇姢鍏变韩璧勬簮璁块棶
+- **ThreadPoolExecutor鏋舵瀯**锛氭浛浠ｅ杩涚▼锛岄伩鍏嶅叏灞€鍙橀噺鍐茬獊
+- **鏅鸿兘閿欒澶勭悊**锛氬崟绾跨▼澶辫触涓嶅奖鍝嶆暣浣撴祦绋?
+- **瀹炴椂杩涘害鐩戞帶**锛氳缁嗙殑澶勭悊鐘舵€佸拰鎬ц兘鎸囨爣鏄剧ず
+- **鍐呭瓨浼樺寲**锛氱嚎绋嬪叡浜唴瀛橈紝闄嶄綆60%鍐呭瓨鍗犵敤
 
 ### Changed
-- **并发模型升级**：从 `multiprocessing.Process` 迁移到 `concurrent.futures.ThreadPoolExecutor`
-- **全局变量处理**：工作线程使用局部变量，避免状态冲突
-- **文件名解析增强**：支持 "next" 和非数字期号标识符
-- **错误隔离改进**：异常线程不影响其他工作线程执行
+- **骞跺彂妯″瀷鍗囩骇**锛氫粠 `multiprocessing.Process` 杩佺Щ鍒?`concurrent.futures.ThreadPoolExecutor`
+- **鍏ㄥ眬鍙橀噺澶勭悊**锛氬伐浣滅嚎绋嬩娇鐢ㄥ眬閮ㄥ彉閲忥紝閬垮厤鐘舵€佸啿绐?
+- **鏂囦欢鍚嶈В鏋愬寮?*锛氭敮鎸?"next" 鍜岄潪鏁板瓧鏈熷彿鏍囪瘑绗?
+- **閿欒闅旂鏀硅繘**锛氬紓甯哥嚎绋嬩笉褰卞搷鍏朵粬宸ヤ綔绾跨▼鎵ц
 
 ### Performance
-- **网络请求优化**：减少90%重复数据下载
-- **处理速度提升**：大规模批量处理性能提升40%
-- **内存使用优化**：峰值内存占用降低60%
-- **稳定性提升**：多线程错误率降低80%
+- **缃戠粶璇锋眰浼樺寲**锛氬噺灏?0%閲嶅鏁版嵁涓嬭浇
+- **澶勭悊閫熷害鎻愬崌**锛氬ぇ瑙勬ā鎵归噺澶勭悊鎬ц兘鎻愬崌40%
+- **鍐呭瓨浣跨敤浼樺寲**锛氬嘲鍊煎唴瀛樺崰鐢ㄩ檷浣?0%
+- **绋冲畾鎬ф彁鍗?*锛氬绾跨▼閿欒鐜囬檷浣?0%
 
 ### Documentation
-- **架构文档更新**：添加多线程优化架构图和性能对比
-- **使用指南增强**：突出Plus版本优化特性和使用建议
-- **运维指南扩展**：新增多线程监控和故障排查章节
-- **API文档完善**：补充线程安全API使用说明和示例代码
+- **鏋舵瀯鏂囨。鏇存柊**锛氭坊鍔犲绾跨▼浼樺寲鏋舵瀯鍥惧拰鎬ц兘瀵规瘮
+- **浣跨敤鎸囧崡澧炲己**锛氱獊鍑篜lus鐗堟湰浼樺寲鐗规€у拰浣跨敤寤鸿
+- **杩愮淮鎸囧崡鎵╁睍**锛氭柊澧炲绾跨▼鐩戞帶鍜屾晠闅滄帓鏌ョ珷鑺?
+- **API鏂囨。瀹屽杽**锛氳ˉ鍏呯嚎绋嬪畨鍏ˋPI浣跨敤璇存槑鍜岀ず渚嬩唬鐮?
 
 ---
 
 ## [1.0.0] - 2025-10-11
 ### Added
-- 精简后的 `src/common.py`、`src/config.py`、`src/data_fetcher.py` 以及对应单元测试。
-- Makefile、示例数据 (`data/kl8/data.csv`) 与全新的 README/文档体系。
-- `ASSUMPTIONS.md`、`docs/decision_record.md`、`docs/architecture.md`、`docs/api.md`、`docs/ops.md`、`agent_report.md`。
+- 绮剧畝鍚庣殑 `src/common.py`銆乣src/config.py`銆乣src/data_fetcher.py` 浠ュ強瀵瑰簲鍗曞厓娴嬭瘯銆?
+- Makefile銆佺ず渚嬫暟鎹?(`data/kl8/data.csv`) 涓庡叏鏂扮殑 README/鏂囨。浣撶郴銆?
+- `ASSUMPTIONS.md`銆乣docs/decision_record.md`銆乣docs/architecture.md`銆乣docs/api.md`銆乣docs/ops.md`銆乣agent_report.md`銆?
 
 ### Changed
-- 只保留快乐 8 玩法，所有公共接口默认针对 `kl8`。
-- 重新配置测试流程，使 `pytest --cov=src` 应用于核心模块。
-- `scripts/get_data.py` 和 `examples/analysis_example.py` 与新结构对齐。
+- 鍙繚鐣欏揩涔?8 鐜╂硶锛屾墍鏈夊叕鍏辨帴鍙ｉ粯璁ら拡瀵?`kl8`銆?
+- 閲嶆柊閰嶇疆娴嬭瘯娴佺▼锛屼娇 `pytest --cov=src` 搴旂敤浜庢牳蹇冩ā鍧椼€?
+- `scripts/get_data.py` 鍜?`examples/analysis_example.py` 涓庢柊缁撴瀯瀵归綈銆?
 
 ### Removed
-- pipeline、modeling、preprocessing 等与模型训练相关的代码及测试。
+- pipeline銆乵odeling銆乸reprocessing 绛変笌妯″瀷璁粌鐩稿叧鐨勪唬鐮佸強娴嬭瘯銆?

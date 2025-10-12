@@ -54,6 +54,8 @@ MODEL_METADATA_FILE = "metadata.json"
 _ANALYSIS_SECTION = YAML_CONFIG.get("analysis", {})
 _DIRICHLET_SECTION = _ANALYSIS_SECTION.get("dirichlet", {})
 _RULE_SECTION = _ANALYSIS_SECTION.get("rules", {})
+_COPULA_SECTION = _ANALYSIS_SECTION.get("copula", {})
+_GRAPH_SECTION = _ANALYSIS_SECTION.get("graph_embedding", {})
 
 DIRICHLET_CONFIG = {
     "prior_strength": float(_DIRICHLET_SECTION.get("prior_strength", 0.5)),
@@ -67,6 +69,31 @@ RULE_MINER_CONFIG = {
     "max_itemset_size": int(_RULE_SECTION.get("max_itemset_size", 3)),
     "cache_ttl_seconds": int(_RULE_SECTION.get("cache_ttl_seconds", 24 * 60 * 60)),
     "soft_penalty_weight": float(_RULE_SECTION.get("soft_penalty_weight", 0.4)),
+}
+
+COPULA_CONFIG = {
+    "enabled": bool(_COPULA_SECTION.get("enabled", True)),
+    "min_draws": int(_COPULA_SECTION.get("min_draws", 200)),
+    "samples": int(_COPULA_SECTION.get("samples", 48)),
+    "shrinkage": float(_COPULA_SECTION.get("shrinkage", 0.12)),
+    "topk_multiplier": float(_COPULA_SECTION.get("topk_multiplier", 1.3)),
+    "random_seed": (
+        None if _COPULA_SECTION.get("random_seed") in (None, "", "null") else int(_COPULA_SECTION.get("random_seed"))
+    ),
+}
+
+GRAPH_EMBED_CONFIG = {
+    "enabled": bool(_GRAPH_SECTION.get("enabled", True)),
+    "embedding_dim": int(_GRAPH_SECTION.get("embedding_dim", 32)),
+    "cache_file": str(
+        _GRAPH_SECTION.get(
+            "cache_file",
+            str(PATHS["data_cache"] / "graph_embeddings.npz"),
+        )
+    ),
+    "weight": float(_GRAPH_SECTION.get("weight", 0.16)),
+    "metric": str(_GRAPH_SECTION.get("metric", "norm")),
+    "decay": float(_GRAPH_SECTION.get("decay", 0.92)),
 }
 
 
@@ -147,6 +174,8 @@ __all__ = [
     "MODEL_METADATA_FILE",
     "DIRICHLET_CONFIG",
     "RULE_MINER_CONFIG",
+    "COPULA_CONFIG",
+    "GRAPH_EMBED_CONFIG",
     "NETWORK_CONFIG",
     "PATHS",
     "SequenceModelSpec",

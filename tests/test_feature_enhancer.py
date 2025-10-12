@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 
+from src.analysis import feature_enhancer as fe
 from src.analysis.feature_enhancer import (
     FeatureDebugInfo,
+    clear_graph_embedding_cache,
     compute_co_occurrence_scores,
     compute_enhanced_scores,
     compute_recency_and_momentum_scores,
@@ -45,6 +47,7 @@ def test_compute_enhanced_scores_returns_ranked_list():
     assert 0.0 <= debug.dirichlet_scores[sample_key] <= 1.0
     assert len(debug.dirichlet_mean) == 80
     assert len(debug.dirichlet_variance) == 80
+    assert len(debug.graph_embedding_scores) == 80
     # 检查排序单调性
     for i in range(len(ranked) - 1):
         assert ranked[i][1] >= ranked[i + 1][1]
@@ -56,3 +59,27 @@ def test_compute_enhanced_scores_with_empty_input():
     assert ranked == []
     assert isinstance(debug, FeatureDebugInfo)
     assert debug.combined_scores == []
+
+
+def test_compute_enhanced_scores_with_graph_embeddings(tmp_path, monkeypatch):
+    draws = _build_sample_draws()
+    cache_path = tmp_path / "graph_embeddings.npz"
+    rng = np.random.default_rng(2024)
+    embeddings = rng.random((80, 16))
+    np.savez(cache_path, embeddings=embeddings)
+
+    original_path = fe.GRAPH_EMBED_CONFIG.get("cache_file")
+    original_enabled = fe.GRAPH_EMBED_CONFIG.get("enabled", True)
+    original_weight = fe.GRAPH_EMBED_CONFIG.get("weight", 0.0)
+    monkeypatch.setitem(fe.GRAPH_EMBED_CONFIG, "cache_file", str(cache_path))
+    monkeypatch.setitem(fe.GRAPH_EMBED_CONFIG, "enabled", True)
+    monkeypatch.setitem(fe.GRAPH_EMBED_CONFIG, "weight", max(0.1, original_weight))
+    clear_graph_embedding_cache()
+
+    ranked, debug = compute_enhanced_scores(draws, limit=30)
+    assert len(ranked) == 80
+    assert isinstance(debug, FeatureDebugInfo)
+    assert any(score > 0.0 for score in debug.graph_embedding_scores.values())
+
+    # 恢复配置（由 monkeypatch 自动完成，但显式重置缓存）
+    clear_graph_embedding_cache()

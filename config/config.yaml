@@ -60,3 +60,17 @@ analysis:
     max_itemset_size: 3      # 关注的最大项集大小
     cache_ttl_seconds: 86400 # 规则缓存有效期（秒）
     soft_penalty_weight: 0.4 # 软模式下的惩罚放大系数
+  copula:
+    enabled: true            # 是否启用 Copula 采样辅助
+    min_draws: 180           # 估计相关矩阵所需的最小期数
+    samples: 64              # 每次生成的候选组合数量
+    shrinkage: 0.1           # 协方差矩阵收缩强度（0-1）
+    topk_multiplier: 1.4     # 采样结果与需求数量的倍率上限
+    random_seed: null        # 随机种子；null 表示按运行时间随机
+  graph_embedding:
+    enabled: true                            # 是否启用图嵌入通道
+    embedding_dim: 32                        # 训练脚本生成的嵌入维度
+    cache_file: "./data_cache/graph_embeddings.npz" # 嵌入缓存文件路径
+    weight: 0.18                             # 在综合得分中的权重
+    metric: "norm"                           # 得分方式：norm / cosine_mean
+    decay: 0.94                              # 历史数据权重衰减因子（训练脚本保持一致）

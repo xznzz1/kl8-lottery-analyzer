@@ -81,6 +81,22 @@ except Exception:
         if str(PROJECT_ROOT) not in sys.path:
             sys.path.insert(0, str(PROJECT_ROOT))
     from src.analysis.rule_miner import build_rule_filter  # type: ignore
+try:
+    from .copula_sampler import CopulaSamplerConfig, generate_copula_candidates  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.copula_sampler import CopulaSamplerConfig, generate_copula_candidates  # type: ignore
+try:
+    from .mutual_information import compute_mutual_information_matrix  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.mutual_information import compute_mutual_information_matrix  # type: ignore
 from itertools import combinations
 from loguru import logger
 
@@ -139,6 +155,43 @@ parser.add_argument(
     default=-1.0,
     type=float,
     help='override penalty weight in soft mode (<=0 使用默认值)'
+)
+parser.add_argument(
+    '--copula_mode',
+    default="auto",
+    type=str,
+    choices=["auto", "off", "force"],
+    help='Copula 采样模式：auto=随高级模式启用，off=禁用，force=始终启用'
+)
+parser.add_argument(
+    '--copula_samples',
+    default=0,
+    type=int,
+    help='手动指定 Copula 采样数量（<=0 表示使用配置文件数值）'
+)
+parser.add_argument(
+    '--copula_shrinkage',
+    default=-1.0,
+    type=float,
+    help='覆盖 Copula 协方差收缩强度（<0 表示沿用配置）'
+)
+parser.add_argument(
+    '--copula_min_draws',
+    default=-1,
+    type=int,
+    help='覆盖 Copula 拟合所需的最小历史样本量（<0 表示沿用配置）'
+)
+parser.add_argument(
+    '--copula_multiplier',
+    default=0.0,
+    type=float,
+    help='覆盖 Copula 候选倍率（<=0 表示沿用配置）'
+)
+parser.add_argument(
+    '--copula_seed',
+    default=-1,
+    type=int,
+    help='覆盖 Copula 随机种子（负数表示运行时随机）'
 )
 args = parser.parse_args()
 
@@ -1125,6 +1178,11 @@ def advanced_number_generation(use_genetic=True, use_ml=True):
     candidate_solutions = []
     feature_score_lookup = {}
     feature_debug = None
+    mutual_info_matrix = None
+    try:
+        mutual_info_matrix = compute_mutual_information_matrix(ori_numpy, limit_line)
+    except Exception as exc:
+        logger.debug("互信息矩阵计算失败，忽略该惩罚项: {}", exc)
     
     # 1. 遗传算法生成
     if use_genetic:
@@ -1269,7 +1327,51 @@ def advanced_number_generation(use_genetic=True, use_ml=True):
     except Exception as e:
         logger.warning(f"特征增强生成失败: {e}")
     
-    # 5. 如果没有足够的候选解，使用改进的随机生成
+    # 5. Copula 多样性采样
+    copula_diagnostics = None
+    copula_mode = (args.copula_mode or "auto").lower()
+    enable_copula = copula_mode == "force" or (copula_mode == "auto" and args.advanced_mode >= 2)
+    if enable_copula and copula_mode != "off" and COPULA_CONFIG.get("enabled", True):
+        try:
+            copula_config = CopulaSamplerConfig(
+                min_draws=args.copula_min_draws if args.copula_min_draws > 0 else COPULA_CONFIG["min_draws"],
+                shrinkage=args.copula_shrinkage if args.copula_shrinkage >= 0 else COPULA_CONFIG["shrinkage"],
+                samples=args.copula_samples if args.copula_samples > 0 else COPULA_CONFIG["samples"],
+                topk_multiplier=args.copula_multiplier if args.copula_multiplier > 0 else COPULA_CONFIG["topk_multiplier"],
+                random_seed=args.copula_seed if args.copula_seed >= 0 else COPULA_CONFIG.get("random_seed"),
+            )
+            target_candidates = max(args.total_create if args.total_create > 0 else 0, args.cal_nums * 3, 12)
+            copula_candidates, copula_diagnostics = generate_copula_candidates(
+                draws=ori_numpy,
+                limit=limit_line,
+                desired=target_candidates,
+                config=copula_config,
+            )
+            if copula_candidates:
+                existing = {tuple(sorted(sol)) for sol in candidate_solutions}
+                allowed = max(6, args.cal_nums)
+                appended = 0
+                for combo in copula_candidates:
+                    ordered = tuple(sorted(combo))
+                    if ordered in existing:
+                        continue
+                    candidate_solutions.append(list(ordered))
+                    existing.add(ordered)
+                    appended += 1
+                    if appended >= allowed:
+                        break
+                if args.simple_mode == 0 and copula_diagnostics:
+                    tqdm.write(
+                        "Copula 采样补充 {} 组候选（cond≈{:.2f}，样本量={}）".format(
+                            appended,
+                            copula_diagnostics.condition_number,
+                            copula_diagnostics.effective_draws,
+                        )
+                    )
+        except Exception as exc:
+            logger.warning(f"Copula 采样失败: {exc}")
+
+    # 6. 如果没有足够的候选解，使用改进的随机生成
     while len(candidate_solutions) < 3:
         solution = []
         
@@ -1295,7 +1397,7 @@ def advanced_number_generation(use_genetic=True, use_ml=True):
         if len(solution) == args.cal_nums:
             candidate_solutions.append(sorted(solution))
     
-    # 6. 评估并选择最佳解
+    # 7. 评估并选择最佳解
     best_solution = None
     best_score = float('-inf')
     
@@ -1323,6 +1425,13 @@ def advanced_number_generation(use_genetic=True, use_ml=True):
                         feature_score_lookup.get(n, 0.0) for n in solution
                     ) / len(solution)
                     score += feature_bonus
+
+                if mutual_info_matrix is not None:
+                    mi_penalty = 0.0
+                    for i_idx in range(len(solution)):
+                        for j_idx in range(i_idx + 1, len(solution)):
+                            mi_penalty += mutual_info_matrix[solution[i_idx] - 1, solution[j_idx] - 1]
+                    score -= mi_penalty / max(1, len(solution))
                 
                 if score > best_score:
                     best_score = score

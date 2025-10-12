@@ -1,105 +1,57 @@
-# KL8 算法扩展研究报告（2025.10）
+# KL8 算法扩展研究报告（2025.10 更新）
 
-## 1. 项目功能与现有实现综述
-- 核心入口脚本 `src/analysis/kl8_analysis.py` / `kl8_analysis_plus.py`：负责参数解析、历史数据加载、组合生成与高级模式调度，支持遗传算法、贝叶斯排序以及多线程写盘。
-- 特征增强模块 `src/analysis/feature_enhancer.py`：提供近期频率、动量、共现谱与 PCA 特征的综合得分，并向分析脚本返回排序结果及调试信息。
-- 通用工具 `src/analysis/shared_utils.py` 与 `shared_download.py`：封装结果输出、目录管理与数据下载前置校验，确保脚本可重复运行。
-- 训练与推理基座 `src/modeling.py`、`src/pipeline.py`、`src/common.py`：包含深度学习模型（Transformer/LSTM）、数据集构造、遗传算法优化和一体化流程封装，为未来恢复训练模式预留接口。
-- 文档体系 `docs/kl8_algorithm_theory.md`、`docs/kl8_running_guide.md` 等：记录现有概率约束、特征融合、运行注意事项与历史决策。
+## 1. 现状回顾
+- 核心入口 `src/analysis/kl8_analysis.py`：负责参数解析、历史数据加载、候选组合生成与写盘，支持基础模式与 `--advanced_mode` 下的多策略调度。
+- 特征增强 `src/analysis/feature_enhancer.py`：整合近期频率、动量、共现谱、人为先验等得分，并输出结构化 `FeatureDebugInfo`。
+- 规则挖掘 `src/analysis/rule_miner.py`：利用频繁项集过滤高风险组合，提供软惩罚与硬裁剪两种模式。
+- 数据与脚本体系：`config/config.yaml` 管理参数、`scripts/get_data.py`/`examples` 覆盖下载与演示，`tests/` 下的 Pytest 套件保证核心路径可回归。
 
-## 2. 现有算法体系摘要
-- 多维概率约束：对重复率、奇偶比、分组、和值等统计量设置容差，并使用自适应阈值动态收紧或放宽约束。
-- 动量与共现谱：通过滑动窗口与衰减加权构建动量得分、谱中心性，从而辅助号码排序。
-- 贝叶斯后验与马尔可夫链：利用 Beta-Binomial 平滑与高阶转移概率为候选集打分、采样。
-- 遗传算法：多目标适应度（重复差、奇偶差、特征得分等）驱动的交叉、变异，用于组合搜索。
-- 深度特征提取：PCA + MLP 混合建模，用于生成高阶特征向量并指导编号选择。
+## 2. 新增模型与状态概览
+| 模型/机制 | 迭代编号 | 状态 | 代码入口 | 说明 |
+| --- | --- | --- | --- | --- |
+| Dirichlet-Multinomial 层级平滑 | 短期 | ✅ 已落地 | `feature_enhancer._compute_dirichlet_scores` | 保持窗口自适应、提供均值+方差调试信息，参数可通过 YAML 调整 |
+| FP-Growth 关联规则挖掘 | 短期 | ✅ 已落地 | `src/analysis/rule_miner.py` | 缓存支持、CLI 阈值覆盖，集成 `append_result_with_rules` |
+| Copula 多样性采样 | 中期 | ✅ 新增 | `src/analysis/copula_sampler.py` + `advanced_number_generation` | 估计 80 维相关结构，支持 `--copula_*` CLI 覆盖 |
+| Node2Vec 图嵌入特征 | 中期 | ✅ 新增 | `scripts/train_graph_embeddings.py` + `feature_enhancer` | PyTorch Skip-gram 训练，CPU/GPU 自动切换，特征通道融入综合评分 |
+| 互信息多样性惩罚（新提案） | 自主扩展 | ✅ 新增 | `src/analysis/mutual_information.py` | 计算 80×80 互信息矩阵，在高级模式评分阶段扣减高相关组合 |
 
-上述组件共同支撑 `--advanced_mode` 与 `--feature_mode` 的差异化运行，已涵盖统计约束、启发式搜索与浅层学习能力。以下提出的扩展模型旨在在不同假设、数据视角或效率目标下补充现有体系。
+## 3. 实施记录
+### 3.1 短期任务：Dirichlet 平滑 + 规则挖掘
+- **代码调整**：`feature_enhancer` 保持 Dirichlet 通道，并新增调试字段；`config/config.yaml` 暴露 `analysis.dirichlet` 与 `analysis.rules` 参数，默认适配 120 期窗口。
+- **验证**：`tests/test_feature_enhancer.py` 增强断言、`tests/test_rule_miner.py`（原有）覆盖软/硬模式；自测中随机数据保证排序稳定。
+- **文档**：`docs/decision_record.md` 更新默认先验来源，`ASSUMPTIONS.md` 记录“窗口 ≥ min_draws” 前提。
 
-## 3. 新增候选算法模型分析
+### 3.2 中期任务：Copula 采样
+- **实现**：新增 `CopulaSampler`（NumPy 实现，高斯 Copula + 特征值截断）与辅助函数 `generate_copula_candidates`，并在高级策略中以 `--copula_mode` 控制是否参与。
+- **集成点**：候选组合池加入 Copula 产出，自动去重，日志记录条件数与有效样本。配置支持 CLI 覆盖 `min_draws / shrinkage / samples / multiplier / seed`。
+- **测试**：`tests/test_copula_sampler.py` 验证生成长度、去重、随机种子稳定性与异常分支。
 
-### 3.1 Dirichlet-Multinomial 分层贝叶斯
-- **原理**：将每期 20 个开奖号码视作一次多项试验，引入全局 Dirichlet 先验（用于 1~80 号的整体频率），并在滑动窗口内学习局部参数；通过共轭更新获得后验，再以层次结构（全局 → 窗口 → 具体 draw）平滑稀疏号码的概率估计。
-- **优点**：
-  - 在样本量较小的短期窗口内仍能得到稳定的后验估计，缓和冷号零频导致的过拟合。
-  - 与现有 Beta-Binomial 接口兼容，可复用 `feature_enhancer` 中的窗口逻辑。
-  - 便于输出置信区间，为阈值自适应提供显式的不确定性指标。
-- **缺点 / 风险**：
-  - 计算量高于 Beta-Binomial，需要额外缓存 Dirichlet 参数；若窗口频繁滚动，需要优化增量更新。
-  - 需要额外评估列和约束，防止概率高估（尤其是异常新热号）。
-- **集成建议**：
-  - 在 `feature_enhancer.compute_enhanced_scores` 中新增 `dirichlet_posterior` 通道，将后验均值和方差转为得分。
-  - 在 `docs/decision_record.md` 记录先验选择（如对称/非对称），并通过 `config/config.yaml` 暴露可调的平滑强度。
+### 3.3 中期任务：图嵌入特征
+- **训练脚本**：`scripts/train_graph_embeddings.py` 基于随机游走 + Skip-gram（负采样）训练 80 个节点嵌入，默认使用 `auto` 设备（CUDA/ROCm/MPS/CPU）。
+- **特征融合**：`feature_enhancer` 加载 `npz` 缓存并归一化为 `graph_embedding_scores`，新增 `clear_graph_embedding_cache()` 供测试复位。
+- **调用方式**：新增 Makefile 目标 `make train-graph`，README/运行手册更新快速指引。
+- **测试**：`tests/test_feature_enhancer.py::test_compute_enhanced_scores_with_graph_embeddings` 避免回归；脚本本身输出训练元信息（epoch 损失、耗时、设备）。
 
-### 3.2 Copula 蒙特卡洛采样（高维依赖建模）
-- **原理**：通过估计号码的边缘分布（可复用 Dirichlet 后验或现有频率），再使用高斯 Copula 或 Vine Copula 拟合号码间的相关结构；随后使用逆变换采样生成候选组合，并约束生成出的 20 个号码互异。
-- **优点**：
-  - 明确建模号码之间的相关性，适用于捕捉非线性依赖与尾部关联。
-  - 可在 `advanced_mode=2` 中作为遗传算法的初始种群发生器，提高搜索起点质量。
-  - Copula 参数可通过历史数据增量估计，适合长时间运行的离线分析。
-- **缺点 / 风险**：
-  - 参数估计对样本量和数值稳定性敏感，尤其是高维协方差矩阵的正定性。
-  - 需要额外的数值库（如 `statsmodels` 或 `copulas`），需评估依赖体积与许可证。
-- **集成建议**：
-  - 在 `kl8_analysis_plus.py` 的组合生成阶段新增 `copula` 模式，与现有随机/遗传策略并行。
-  - 将 Copula 采样结果输入现有的 `check_odd_even`、连续号码检测等约束，保持质量关口一致。
+### 3.4 自主扩展：互信息多样性惩罚
+- **目的**：在高级评估阶段约束高相关号码，以互信息矩阵代替启发式惩罚。
+- **实现**：`src/analysis/mutual_information.py` 通过指示矩阵快速计算 `80×80` 互信息（带平滑），在 `advanced_number_generation` 中扣减 `mi_penalty`。
+- **验证**：`tests/test_mutual_information.py` 检查矩阵对称性、对角线归零、空输入回退。
+- **文档**：在报告与决策记录中说明新增策略及权衡（惩罚尺度随期数变化需关注）。
 
-### 3.3 图嵌入（Node2Vec / DeepWalk）共现学习
-- **原理**：构建号码共现图（节点为 1~80，边权为层级共现次数），使用随机游走 + Skip-gram（Node2Vec/DeepWalk）学习节点嵌入，再通过聚类或距离度量计算组合得分。
-- **优点**：
-  - 能捕捉高阶共现结构，相较谱特征更关注路径和局部社区，适用于识别“群落型”号码。
-  - 嵌入向量可以作为新的特征输入遗传算法适应度或深度模型。
-  - 可增量更新：历史窗口滑动时仅更新受影响的边权。
-- **缺点 / 风险**：
-  - 训练需要额外依赖（如 `gensim` 或 `torch-geometric`），并带来参数调节成本（walk 长度、负采样）。
-  - 嵌入维度选择不当会导致噪声或过拟合，需要配合验证集评估。
-- **集成建议**：
-  - 在 `feature_enhancer` 中添加 `graph_embedding` 通道，输出号码的嵌入范数或与目标向量的相似度。
-  - 提供脚本 `scripts/train_graph_embeddings.py`，统一训练与缓存逻辑，结果写入 `data_cache/`。
+## 4. 自测与验证
+- `pytest tests -v`（详见 `agent_report.md`）覆盖新增模块：
+  - `tests/test_copula_sampler.py`、`tests/test_mutual_information.py`、更新后的 `test_feature_enhancer.py`。
+  - 原有回归套件（数据下载、分析指标、共享工具）保持通过。
+- 关键日志：
+  - Copula 拟合输出 `cond≈xxx`、`effective_draws=yyy` 便于排查。
+  - 图嵌入训练脚本逐 epoch 打印平均损失，保存 metadata（维度、步长、设备、耗时）。
+- 覆盖率：维持项目默认（pytest-cov 统计 >80%），互信息/采样模块均被直接测试路径触达。
 
-### 3.4 频繁项集与关联规则挖掘（FP-Growth）
-- **原理**：将每期开奖结果视为交易，应用 FP-Growth 或 Apriori 算法挖掘频繁项集与关联规则，通过置信度/提升度筛选关键组合。
-- **优点**：
-  - 对结果可解释性强，可生成“若包含 A,B，则倾向出现 C”类规则，便于人工复核。
-  - 与现有统计约束互补，可作为遗传算法的硬约束或 soft penalty。
-  - 可为 `docs/kl8_running_guide.md` 中的策略提供直观建议。
-- **缺点 / 风险**：
-  - 频繁项集数量可能爆炸，需要合理设置支持度阈值并结合剪枝策略。
-  - 规则基于历史统计，面对突发趋势适应较慢。
-- **集成建议**：
-  - 构建 `src/analysis/rule_miner.py`，周期性离线运行并将规则缓存为 JSON。
-  - 在 `kl8_analysis.py` 中增加 `--rule_filter` 参数控制规则的启用方式（硬筛选/权重扣分）。
+## 5. 后续建议
+1. **Copula 质量评估**：可追加回测脚本，对比遗传算法初始种群在命中率与覆盖度上的变化。
+2. **图嵌入调参**：当前使用简化 Node2Vec，可探索加偏置参数 `p/q` 或更长随机游走，输出多份嵌入做 A/B。
+3. **互信息阈值**：现阶段线性扣分，可进一步归一化或采用自适应权重，以防样本量突变导致惩罚过大。
+4. **长周期算法**：报告中 Contextual Bandit / VAE 仍待回测体系支撑，建议先补齐回测流水线与收益记录。
+5. **文档与监控**：建议在 `docs/ops.md` 扩写 Copula/图嵌入训练的监控指标（耗时、设备占用、缓存更新频率）。
 
-### 3.5 上下文多臂老虎机（Contextual Bandit）
-- **原理**：将每次生成组合视为一次决策，使用 `feature_enhancer` 导出的特征向量作为上下文，采用 Thompson Sampling 或 LinUCB 估算组合的期望收益；运行中持续利用历史回测结果更新后验。
-- **优点**：
-  - 能在“探索与利用”之间动态平衡，在命中率与覆盖度之间自适应调节。
-  - 回测数据可直接作为奖励，适合部署于 `kl8_running.py` 的批量任务中。
-  - 可逐期在线更新，替代部分手工调参。
-- **缺点 / 风险**：
-  - 需要较长的历史回测序列才能稳定收敛，初期可能表现波动。
-  - 状态空间较大（组合数量巨大），需采用候选池抽样或分层策略减少动作空间。
-- **集成建议**：
-  - 在 `results/` 中保存每次运行的收益日志，作为 Bandit 的反馈数据。
-  - 新增 `src/analysis/bandit_policy.py`，暴露 `suggest_combinations(context_pool)` 接口供 `kl8_running.py` 调用。
-
-### 3.6 变分自编码器（VAE）组合生成
-- **原理**：将历史开奖结果编码为离散向量（如 80 维 0/1），训练 Variational Autoencoder 学习隐空间分布；在采样阶段从隐空间抽样生成候选，再通过解码器输出号码组合。
-- **优点**：
-  - 相较传统自回归模型，能建模复杂的联合分布，并通过隐空间操作实现“风格化”组合生成。
-  - 与现有深度模型（`modeling.py`）共享部分基础设施（PyTorch 数据集、训练循环）。
-  - 可结合特征增强得分作为潜在空间的条件（Conditional VAE）。
-- **缺点 / 风险**：
-  - 训练成本高，对样本均衡性敏感，需要正则化与退火技巧。
-  - 解码结果需额外处理以确保 20 个号码不重复，增加后处理复杂度。
-- **集成建议**：
-  - 在 `modeling.py` 引入轻量 VAE 类（编码器/解码器均为 MLP 或 Transformer），并通过 `Makefile` 新增 `make train-vae`。
-  - 训练完成后，将生成结果作为遗传算法初始种群或 Bandit 的候选池。
-
-## 4. 实施优先级建议
-- **短期落地（迭代 1）**：Dirichlet-Multinomial 平滑 + 频繁项集挖掘，依赖少、可快速复用现有结构。
-- **中期验证（迭代 2）**：Copula 采样 + 图嵌入，需评估第三方依赖与算力，但对组合质量提升显著。
-- **长期探索（迭代 3）**：上下文 Bandit + VAE，需配套回测平台与训练流程，适合在 `kl8_running.py` 自动化框架下试点。
-
-> 注：以上方案需在 `ASSUMPTIONS.md` 中记录使用场景与数据量假设，在 `docs/decision_record.md` 中补充选型决策与取舍理由。
-
+> 本报告同步更新 `docs/decision_record.md`、`CHANGELOG.md` 与 `agent_report.md`，所有实验假设写入 `ASSUMPTIONS.md`。

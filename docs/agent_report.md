@@ -1,112 +1,45 @@
 # 本次自动执行报告 | Automation Execution Report
 
-## 2025-10-13 Dirichlet 平滑与规则筛选
-- 引入 Dirichlet-Multinomial 后验得分，优化特征融合表现，新增配置项 `config.analysis.dirichlet`。
-- 开发 `src/analysis/rule_miner.py`，基于 FP-Growth 缓存频繁项集并提供 `--rule_filter` 软/硬模式。
-- `kl8_analysis*.py` 支持规则惩罚与 CLI 参数（`--rule_support`、`--rule_confidence` 等），并更新 README/文档。
-- 新增 `tests/test_rule_miner.py` 验证硬/软模式，覆盖违规组合与惩罚权重。
+## 2025-10-14 Copula 采样与图嵌入扩展
+- 在高级候选生成中引入 Copula 多样性采样（`src/analysis/copula_sampler.py`），并附加互信息惩罚，强化号码相关性建模。
+- 新增图嵌入训练脚本 `scripts/train_graph_embeddings.py`（PyTorch Node2Vec），支持自动检测 CPU/GPU/AMD ROCm，结果由 `feature_enhancer` 直接加载。
+- `feature_enhancer` 增加 `graph_embedding_scores` 字段与缓存清理方法，综合得分权重可通过 `analysis.graph_embedding.weight` 调整。
+- 重大配置扩充：`config.analysis.copula`、`config.analysis.graph_embedding`、Makefile `train-graph` 目标，以及 `--copula_*` CLI 覆盖参数。
 
-## 需求摘要 | Requirement Summary
-- 背景与目标 | Background & objectives:
-  - **核心需求**：修改Plus多线程逻辑，当download=1时仅启动一个线程下载，然后再用多线程处理数据
-  - **扩展目标**：检查并优化kl8_cash_plus.py的同类问题，更新所有文档到最新状态
-  - **技术目标**：提升并发性能，解决多进程架构问题，实现线程安全的资源共享
-- 核心功能点 | Key features:
-  - **多线程架构重构**：从multiprocessing.Process迁移到concurrent.futures.ThreadPoolExecutor
-  - **数据下载优化**：实现单线程数据下载，避免重复网络请求
-  - **线程安全机制**：使用threading.Lock保护共享资源访问
-  - **文档体系更新**：全面更新架构、使用、运维等文档反映优化成果
-
-## 关键假设 | Key Assumptions
-- （详见 ASSUMPTIONS.md）| (See ASSUMPTIONS.md)
+## 需求摘记 | Requirement Summary
+- 落实《docs/kl8_algorithm_extension_report.md》中的短期与中期任务：
+  - 完成 Dirichlet 平滑、频繁项集挖掘的验证与文档记录。
+  - 实装 Copula 蒙特卡洛采样与图嵌入特征通道。
+  - 扩展互信息惩罚机制，提升候选组合多样性。
+- 保持 CLI 可配置、兼容 CPU/GPU 环境，并在文档中记录实现过程。
 
 ## 方案概览 | Solution Overview
-- 架构与模块 | Architecture & modules:
-  - **优化前架构**：multiprocessing.Process多进程模型，每个子进程独立下载数据
-  - **优化后架构**：ThreadPoolExecutor线程池模型，主线程单次下载+多线程并行处理
-  - **关键模块改进**：kl8_analysis_plus.py、kl8_cash_plus.py完成多线程架构升级
-  - **架构文档更新**：docs/architecture.md新增多线程架构图和性能对比表
-  
-- 选型与权衡 | Choices & trade-offs:
-  - **并发模型选择**：ThreadPoolExecutor vs multiprocessing.Process
-    - ✅ 线程共享内存，避免进程间通信开销
-    - ✅ 全局变量可直接访问，无需复杂同步机制
-    - ✅ 启动速度快，资源占用低
-    - ⚠️ 受GIL限制，但I/O密集型任务影响小
-    
-  - **数据下载策略**：单次主线程下载 vs 每个工作单元独立下载
-    - ✅ 减少90%重复网络请求
-    - ✅ 避免并发访问导致的网站反爬机制触发
-    - ✅ 提升整体处理速度40%
+- 架构与模块：
+  - `copula_sampler` 负责相关矩阵拟合和采样，`advanced_number_generation` 从配置读取并整合候选。
+  - 图嵌入训练脚本独立运行，分析阶段仅依赖 NumPy，避免在生产环境安装 PyTorch。
+  - 互信息模块将历史开奖转换为指示矩阵后计算 80×80 MI 矩阵，为高级模式提供多样性扣分依据。
+- 选型与权衡：
+  - **Copula**：自实现高斯 Copula + 特征值截断，避免额外依赖且便于调参。
+  - **图嵌入**：简化 Node2Vec（随机游走 + Skip-gram）可在 CPU 环境训练，脚本支持 `--device` 手动覆盖。
+  - **互信息**：基于矩阵乘法快速求解并引入平滑，默认权重保守，防止惩罚过大。
 
 ## 实现与自测 | Implementation & Self-testing
-
-### 核心实现成果
-- **多线程架构重构**：
-  - ✅ kl8_analysis_plus.py: 实现download_data_if_needed()单线程下载函数
-  - ✅ kl8_cash_plus.py: 应用相同优化架构，支持批量文件并行处理
-  - ✅ 线程安全机制: 使用threading.Lock保护共享资源访问
-  - ✅ 错误隔离: 单线程失败不影响其他工作线程
-
-### 测试与验证
-- 一键命令 | One-liner: `python kl8_analysis_plus.py --cal_nums 10 --total_create 100 --max_workers 4`
-- 功能验证 | Functional tests: 
-  - ✅ download=1场景: 主线程单次下载，多线程处理数据
-  - ✅ download=0场景: 跳过下载，直接多线程处理
-  - ✅ 线程安全性: 多线程并发访问共享变量无冲突
-  - ✅ 错误处理: 异常线程不影响整体流程
-- 性能测试 | Performance tests:
-  - 🚀 网络请求减少90%（重复下载优化）
-  - 🚀 内存占用降低60%（多进程→线程池）
-  - 🚀 处理速度提升40%（大规模批量任务）
-  - 🚀 错误率降低80%（改进错误隔离机制）
-
-### 文档更新完成度
-- ✅ README.md: 添加多线程优化亮点和FAQ
-- ✅ docs/kl8_usage_guide.md: 突出Plus版本优化特性
-- ✅ docs/architecture.md: 新增多线程架构图和性能对比
-- ✅ docs/decision_record.md: 详细记录架构优化决策过程
-- ✅ docs/ops.md: 扩展多线程监控和故障排查指南
-- ✅ docs/api.md: 补充线程安全API使用说明
-- ✅ CHANGELOG.md: 完整记录v1.1.0多线程优化版本变更
+- **代码实现**：
+  - `src/analysis/copula_sampler.py`（CopulaSampler + Diagnostics）
+  - `src/analysis/mutual_information.py`（互信息矩阵计算）
+  - `scripts/train_graph_embeddings.py`（Skip-gram 训练）
+  - `feature_enhancer` 图嵌入通道、`kl8_analysis.py` Copula/互信息集成、Makefile 新增 `train-graph`
+- **单元测试**：
+  - `tests/test_copula_sampler.py`：生成组合长度、去重、种子稳定性、异常分支。
+  - `tests/test_mutual_information.py`：矩阵对称性、对角线归零、空输入回退。
+  - `tests/test_feature_enhancer.py`：缓存失效与有效嵌入场景、`FeatureDebugInfo` 新字段。
+- **自测命令**：
+  - `pytest tests/test_copula_sampler.py tests/test_mutual_information.py tests/test_feature_enhancer.py -v`
+  - `python scripts/train_graph_embeddings.py --lottery kl8 --epochs 5 --device auto`
+  - `python src/analysis/kl8_analysis.py --cal_nums 10 --total_create 120 --limit_line 200 --advanced_mode 2 --copula_mode auto`
 
 ## 风险与后续改进 | Risks & Next Steps
-
-### 已知限制 | Known limitations
-- **线程池配置调优**：max_workers参数需要根据实际硬件和任务特性调整
-- **GIL潜在影响**：CPU密集型任务可能受到全局解释器锁限制
-- **内存监控需求**：大规模并发时需要监控线程共享内存使用情况
-- **错误传播机制**：虽然单线程失败不影响其他线程，但需要完善错误汇总机制
-
-### 技术债务 | Technical debt
-- **单元测试补充**：多线程代码的单元测试覆盖需要进一步完善
-- **性能基准建立**：需要建立不同硬件配置下的性能基准测试
-- **监控指标完善**：线程池状态、内存使用、处理吞吐量等监控指标待完善
-
-### 建议迭代 | Suggested iterations
-1. **性能调优精细化**：
-   - 根据CPU核心数和内存大小提供max_workers自动推荐算法
-   - 实现动态线程池大小调整机制
-   - 添加内存使用率监控和告警机制
-
-2. **监控能力增强**：
-   - 集成Prometheus指标采集
-   - 实现线程池健康检查端点
-   - 添加处理速度和错误率的实时仪表板
-
-3. **测试体系完善**：
-   - 补充多线程场景的集成测试
-   - 建立性能回归测试套件
-   - 添加并发安全性的压力测试
-
-4. **用户体验优化**：
-   - 提供线程池配置建议工具
-   - 实现智能批量大小推荐
-   - 添加处理进度的图形化显示
-
-### 成功指标 | Success metrics
-- ✅ **功能完整性**：所有原有功能在多线程架构下正常运行
-- ✅ **性能提升**：大规模批量处理速度提升40%以上
-- ✅ **资源优化**：内存峰值占用降低60%以上
-- ✅ **稳定性提升**：多线程错误率降低80%以上
-- ✅ **文档完整性**：所有相关文档完成更新，反映架构优化成果
+- **样本量敏感**：Copula 需要足够历史期数，建议增加数据源监控与预警。
+- **权重调节**：互信息惩罚与图嵌入权重仍需长期回测验证，建议加入自动化调参脚本。
+- **性能扩展**：Node2Vec 训练仍为单机脚本，可探索引入更丰富的 walk 参数或批量游走。
+- **运营支持**：后续可在 `docs/ops.md` 补充训练脚本运行指标、缓存更新频率与告警阈值。

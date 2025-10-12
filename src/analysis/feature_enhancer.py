@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-特征增强工具集
-----------------
+特征增强工具箱
+--------------
 面向 `kl8_analysis*.py` 脚本提供基于历史开奖的高级特征计算：
 1. 近期频率与动量；
 2. 号码共现谱分析；
 3. Dirichlet-Multinomial 分层平滑；
-4. PCA 主成分辅助特征。
+4. 图嵌入特征（由 Node2Vec 随脚本训练缓存）；
+5. PCA 主成分辅助特征。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence, Tuple
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -22,19 +24,22 @@ except ImportError:  # pragma: no cover - optional依赖
     PCA = None
 
 try:
-    from ..config import DIRICHLET_CONFIG
+    from ..config import DIRICHLET_CONFIG, GRAPH_EMBED_CONFIG
 except Exception:  # pragma: no cover - 脚本直跑时的路径回退
-    from pathlib import Path
+    from pathlib import Path as _Path
     import sys
 
-    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    PROJECT_ROOT = _Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
-    from src.config import DIRICHLET_CONFIG  # type: ignore
+    from src.config import DIRICHLET_CONFIG, GRAPH_EMBED_CONFIG  # type: ignore
 
 
 Number = int
 Score = float
+
+_GRAPH_EMBED_CACHE: Optional[np.ndarray] = None
+_GRAPH_EMBED_SOURCE: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -47,7 +52,16 @@ class FeatureDebugInfo:
     dirichlet_mean: Dict[Number, Score]
     dirichlet_variance: Dict[Number, Score]
     dirichlet_scores: Dict[Number, Score]
+    graph_embedding_scores: Dict[Number, Score]
     combined_scores: List[Tuple[Number, Score]]
+
+
+def clear_graph_embedding_cache() -> None:
+    """测试辅助函数：主动清理图嵌入缓存。"""
+
+    global _GRAPH_EMBED_CACHE, _GRAPH_EMBED_SOURCE
+    _GRAPH_EMBED_CACHE = None
+    _GRAPH_EMBED_SOURCE = None
 
 
 def _iter_recent_draws(draws: np.ndarray, limit: int) -> Iterable[np.ndarray]:
@@ -73,6 +87,70 @@ def _extract_numbers(draw_row: Sequence[Number]) -> List[Number]:
     """去除行首的期号，仅返回 20 个开奖号码。"""
 
     return [int(n) for n in draw_row[1:] if int(n) > 0]
+
+
+def _numbers_matrix(draws: np.ndarray, limit: int | None = None) -> np.ndarray:
+    """将开奖记录转换为 0/1 指示矩阵。"""
+
+    effective = draws if limit is None else draws[:limit]
+    matrix = np.zeros((effective.shape[0], 80), dtype=float)
+    for idx, row in enumerate(effective):
+        for number in _extract_numbers(row):
+            matrix[idx, number - 1] = 1.0
+    return matrix
+
+
+def _load_graph_embeddings() -> Optional[np.ndarray]:
+    """加载预训练的号码图嵌入向量。"""
+
+    global _GRAPH_EMBED_CACHE, _GRAPH_EMBED_SOURCE
+    if not GRAPH_EMBED_CONFIG.get("enabled", True):
+        return None
+
+    cache_path = Path(GRAPH_EMBED_CONFIG.get("cache_file", "")).expanduser()
+    if cache_path == _GRAPH_EMBED_SOURCE and _GRAPH_EMBED_CACHE is not None:
+        return _GRAPH_EMBED_CACHE
+
+    if not cache_path.exists():
+        return None
+
+    try:
+        payload = np.load(cache_path, allow_pickle=True)
+        embeddings = payload.get("embeddings")
+        if embeddings is None:
+            return None
+        embeddings = np.asarray(embeddings, dtype=float)
+        if embeddings.shape[0] != 80:
+            return None
+        _GRAPH_EMBED_CACHE = embeddings
+        _GRAPH_EMBED_SOURCE = cache_path
+        return embeddings
+    except Exception:  # pragma: no cover - 容忍损坏缓存
+        return None
+
+
+def _compute_graph_embedding_scores(draws: np.ndarray, limit: int) -> np.ndarray:
+    """基于图嵌入向量生成号码得分。"""
+
+    embeddings = _load_graph_embeddings()
+    scores = np.zeros(81, dtype=float)
+    if embeddings is None:
+        return scores
+
+    metric = str(GRAPH_EMBED_CONFIG.get("metric", "norm")).lower()
+    if metric == "cosine_mean":
+        reference = embeddings.mean(axis=0)
+        reference_norm = np.linalg.norm(reference) + 1e-9
+        norms = np.linalg.norm(embeddings, axis=1)
+        cosine = np.zeros(embeddings.shape[0], dtype=float)
+        valid = norms > 1e-9
+        cosine[valid] = (embeddings[valid] @ reference) / (norms[valid] * reference_norm)
+        values = cosine
+    else:
+        values = np.linalg.norm(embeddings, axis=1)
+
+    scores[1:] = _normalise(values)
+    return scores
 
 
 def compute_recency_and_momentum_scores(
@@ -136,12 +214,15 @@ def compute_co_occurrence_scores(
                 matrix[ni, nj] += weight
                 matrix[nj, ni] += weight
 
-    if not np.any(matrix):
-        return np.zeros(max_number + 1, dtype=float)
+    try:
+        eig_values, eig_vectors = np.linalg.eig(matrix[1:, 1:])
+        principal = np.abs(eig_vectors[:, np.argmax(eig_values.real)])
+        scores = np.zeros(81, dtype=float)
+        scores[1:] = _normalise(principal.real)
+    except Exception:  # pragma: no cover - 防御性回退
+        scores = np.zeros(81, dtype=float)
 
-    _, eigenvectors = np.linalg.eigh(matrix)
-    principal_vector = np.abs(eigenvectors[:, -1])
-    return _normalise(principal_vector)
+    return scores
 
 
 def _compute_dirichlet_scores(
@@ -200,7 +281,7 @@ def compute_enhanced_scores(
     """汇总多源特征，返回排序结果与调试信息。"""
 
     if draws.size == 0:
-        empty = FeatureDebugInfo({}, {}, {}, {}, {}, {}, [])
+        empty = FeatureDebugInfo({}, {}, {}, {}, {}, {}, {}, [])
         return [], empty
 
     recency_scores, momentum_scores = compute_recency_and_momentum_scores(
@@ -223,13 +304,11 @@ def compute_enhanced_scores(
         variance_weight=max(DIRICHLET_CONFIG["variance_weight"], 0.0),
     )
 
+    graph_scores = _compute_graph_embedding_scores(draws, limit)
+
     pca_scores = np.zeros(81, dtype=float)
     if use_pca and PCA is not None:
-        numbers_matrix = np.zeros((min(limit, draws.shape[0]), 80), dtype=float)
-        for idx, row in enumerate(draws[: numbers_matrix.shape[0]]):
-            nums = set(_extract_numbers(row))
-            for n in nums:
-                numbers_matrix[idx, n - 1] = 1.0
+        numbers_matrix = _numbers_matrix(draws, limit=min(limit, draws.shape[0]))
         try:
             pca = PCA(n_components=pca_components)
             pca.fit(numbers_matrix)
@@ -247,8 +326,9 @@ def compute_enhanced_scores(
             pca_scores = np.zeros(81, dtype=float)
 
     w_recency, w_momentum, w_co = weights
-    w_pca = 0.18
+    w_pca = 0.18 if use_pca and PCA is not None else 0.0
     w_dirichlet = dirichlet_weight if dirichlet_weight is not None else 0.22
+    w_graph = max(float(GRAPH_EMBED_CONFIG.get("weight", 0.0)), 0.0)
 
     combined = (
         w_recency * recency_scores
@@ -256,6 +336,7 @@ def compute_enhanced_scores(
         + w_co * co_occurrence_scores
         + w_dirichlet * dirichlet_scores
         + w_pca * pca_scores
+        + w_graph * graph_scores
     )
 
     ranked = sorted(
@@ -271,8 +352,8 @@ def compute_enhanced_scores(
         dirichlet_mean={i: float(dirichlet_mean[i]) for i in range(1, 81)},
         dirichlet_variance={i: float(dirichlet_variance[i]) for i in range(1, 81)},
         dirichlet_scores={i: float(dirichlet_scores[i]) for i in range(1, 81)},
+        graph_embedding_scores={i: float(graph_scores[i]) for i in range(1, 81)},
         combined_scores=ranked,
     )
 
     return ranked, debug_info
-

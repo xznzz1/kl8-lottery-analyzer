@@ -1,5 +1,12 @@
 # 设计决策记录（Decision Record）
 
+## 2025-10-13 Copula 采样、图嵌入与互信息惩罚
+- 新增 `src/analysis/copula_sampler.py`，在高级策略中默认随 `advanced_mode>=2` 启用；CLI `--copula_*` 参数支持覆盖样本量、收缩强度、候选倍率与随机种子。
+- 训练脚本 `scripts/train_graph_embeddings.py` 基于 PyTorch Skip-gram，支持 `--device auto` 自动选择 CPU/GPU/AMD ROCm，结果写入 `analysis.graph_embedding.cache_file`。
+- `feature_enhancer` 引入 `graph_embedding_scores` 与缓存清理函数，综合得分增加图嵌入权重，并在测试中覆盖空/有缓存场景。
+- `src/analysis/mutual_information.py` 计算 80×80 互信息矩阵，在 `advanced_number_generation` 中作为多样性扣分，避免高度相关号码集中。
+- `Makefile` 新增 `make train-graph`，README/运行指南同步补充；`config/config.yaml` 扩充 `analysis.copula`、`analysis.graph_embedding` 配置项。
+
 ## 2025-10-13 Dirichlet 平滑与关联规则
 - 在 `src/analysis/feature_enhancer.py` 中引入 Dirichlet-Multinomial 后验得分，并通过 `config.analysis.dirichlet` 控制先验与方差惩罚。
 - 新增 `src/analysis/rule_miner.py`，基于 FP-Growth 提供 `--rule_filter` 软/硬模式并缓存规则。

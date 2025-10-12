@@ -1,6 +1,6 @@
 # KL8 分析工具 Makefile
 
-.PHONY: setup fmt lint test build run download-data ci clean help
+.PHONY: setup fmt lint test build run train-graph download-data ci clean help
 .DEFAULT_GOAL := help
 
 PYTHON ?= python
@@ -35,6 +35,10 @@ run: ## 执行示例（需要已有数据文件）
 	@echo "运行快乐8高频号码统计示例..."
 	$(PYTHON) examples/analysis_example.py
 
+train-graph: ## 训练共现图嵌入缓存
+	@echo "训练 Node2Vec 图嵌入..."
+	$(PYTHON) scripts/train_graph_embeddings.py --lottery kl8
+
 download-data: ## 下载快乐8历史数据
 	$(PYTHON) scripts/get_data.py --name kl8
 
@@ -56,5 +60,6 @@ help: ## 查看可用命令
 	@echo "  make test           - 运行测试"
 	@echo "  make build          - 生成 pyc 产物"
 	@echo "  make run            - 运行示例分析"
+	@echo "  make train-graph    - 训练共现图嵌入缓存"
 	@echo "  make ci             - 本地 CI（fmt+lint+test+build）"
 	@echo "  make clean          - 清理缓存文件"

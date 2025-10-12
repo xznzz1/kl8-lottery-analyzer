@@ -11,12 +11,15 @@
 - 🎯 `src/analysis/feature_enhancer.py`（新增）：基于“近期动量 + 共现谱分析”的特征增强引擎，统一在 `--feature_mode` 参数下启用。
 - 🧮 `src/analysis/rule_miner.py`（新增）：FP-Growth 动态挖掘频繁项集，`--rule_filter` 支持软/硬模式线上筛选组合。
 - 📊 `src/analysis/*.py`：原始版 / Plus 版分析与收益脚本，支持高级算法与多线程。
+- 🧠 `scripts/train_graph_embeddings.py`：Node2Vec 图嵌入训练脚本，自动检测 CPU/GPU/AMD ROCm，生成嵌入供特征增强使用。
+- 🎲 `src/analysis/copula_sampler.py` + 高级模式：Copula 多样性采样与互信息惩罚，补足候选组合相关性建模能力。
 - 🧪 `tests/`：覆盖配置、公共接口、特征增强及抓取模块的 Pytest 用例。
 
 ## 快速开始
 ```bash
 conda activate python311
 make setup
+make train-graph  # 可选：训练/更新图嵌入缓存
 make run
 ```
 
@@ -132,6 +135,10 @@ python src/analysis/kl8_running.py \
    使用 `src/analysis/kl8_running.py`，可搭配参数列表自动遍历。
 5. **下载脚本新增了什么？**  
    `scripts/get_data.py` 默认聚焦快乐 8，仍然支持 `--sequence` 下载顺序数据。
+6. **Copula 采样与图嵌入如何使用？**  
+   - 运行 `make train-graph` 训练或更新图嵌入缓存，脚本会自动选择 CPU/GPU/AMD ROCm 设备。  
+   - 在分析脚本中使用 `--copula_mode auto`（或 `force`）启用 Copula 采样，可搭配 `--copula_samples`、`--copula_shrinkage` 等参数调优。  
+   - 互信息多样性惩罚默认随高级模式启用，如需减弱影响可调低 `analysis.graph_embedding.weight`。
 
 ## 测试与质量
 - `make ci`：依次执行 `fmt`、`lint`、`test`、`build`。
