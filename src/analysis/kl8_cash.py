@@ -20,6 +20,13 @@ except Exception:
     from src.config import *  # type: ignore
 from itertools import combinations
 from loguru import logger
+try:
+    from .shared_cash import CASH_SELECT_LIST, CASH_PRICE_LIST  # type: ignore
+except Exception:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.shared_cash import CASH_SELECT_LIST, CASH_PRICE_LIST  # type: ignore
 
 
 parser = argparse.ArgumentParser()
@@ -70,20 +77,8 @@ ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][1:]
 #     index = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[0][0] - (args.current_nums + 1)
 #     if index >= 0:
 #         ori_numpy = ori_data.drop(ori_data.columns[0], axis=1).to_numpy()[index][1:]
-cash_select_list = []
-for i in range(0, 11):
-    _t = [element for element in range(i, -1, -1)]
-    cash_select_list.append(_t)
-cash_price_list = [[5000000, 8000, 800, 80, 5, 3, 0, 0, 0, 0, 2], \
-                    [300000, 2000, 200, 20, 5, 3, 0, 0, 0, 2], \
-                    [50000, 800, 88, 10, 3, 0, 0, 0, 2], \
-                    [10000, 288, 28, 4, 0, 0, 0, 2], \
-                    [3000, 30, 10, 3, 0, 0, 0], \
-                    [1000, 21, 3, 0, 0, 0], \
-                    [100, 5, 3, 0, 0], \
-                    [53, 3, 0, 0], \
-                    [19, 0, 0], \
-                    [4.6, 0]]
+cash_select_list = CASH_SELECT_LIST
+cash_price_list = CASH_PRICE_LIST
 
 def check_lottery(cash_file_name, args, all_cash=0, all_lucky=0, path_mode=0):
     global ori_numpy, nums_index, cal_nums

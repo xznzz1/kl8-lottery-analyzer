@@ -19,6 +19,14 @@ from loguru import logger
 from torch import nn
 from .config import name_path, data_file_name, data_cq_file_name, model_path, model_args, red_ball_model_name, blue_ball_model_name, ball_name, result_path
 
+# 兼容新版数据获取模块（仅支持 kl8）
+try:
+    from .data_fetcher import download_history as _df_download_history  # type: ignore
+    from .data_fetcher import get_current_issue as _df_get_current_issue  # type: ignore
+except Exception:
+    _df_download_history = None
+    _df_get_current_issue = None
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
@@ -267,7 +275,7 @@ def get_current_number(name):
     :return: int
     """
     url, _ = get_url(name)
-    # add timeout and simple retry
+    # add timeout and simple retry（保留旧彩种逻辑）
     try:
         if name in ["qxc", "pls"]:
             r = get_http_session_with_backoff("{}{}".format(url, "inc/history.php"), timeout=10)

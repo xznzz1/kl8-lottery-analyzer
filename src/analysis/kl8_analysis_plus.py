@@ -58,6 +58,30 @@ except Exception:
         if str(PROJECT_ROOT) not in sys.path:
             sys.path.insert(0, str(PROJECT_ROOT))
     from src.analysis.feature_enhancer import compute_enhanced_scores  # type: ignore
+try:
+    from .shared_utils import ensure_dir, check_odd_even, find_consecutive_number, compute_output_dir  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.shared_utils import ensure_dir, check_odd_even, find_consecutive_number, compute_output_dir  # type: ignore
+try:
+    from .shared_utils import ensure_dir, check_odd_even, find_consecutive_number  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.shared_utils import ensure_dir, check_odd_even, find_consecutive_number  # type: ignore
+try:
+    from .shared_download import ensure_data_available  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.shared_download import ensure_data_available  # type: ignore
 from itertools import combinations
 from loguru import logger
 from multiprocessing import Process, Manager
@@ -98,37 +122,11 @@ name = args.name
 if args.cal_nums < 0:
     args.cal_nums = abs(args.cal_nums) + 1
 
-# 数据下载函数，单独处理
-def download_data_if_needed():
-    """单线程下载数据"""
-    if args.download == 1:
-        if args.simple_mode == 0:
-            print("开始下载数据...")
-        try:
-            from ..common import get_data_run  # type: ignore
-        except Exception:
-            from pathlib import Path as _Path  # type: ignore
-            import sys as _sys  # type: ignore
-            PROJECT_ROOT = _Path(__file__).resolve().parents[2]
-            if str(PROJECT_ROOT) not in _sys.path:
-                _sys.path.insert(0, str(PROJECT_ROOT))
-            from src.common import get_data_run  # type: ignore
-        get_data_run(name=name, cq=0)
-        if args.simple_mode == 0:
-            print("数据下载完成")
+# 数据下载由 shared_download 统一处理
 
 # 数据加载将在主程序块中处理
 
-if args.random_mode == 0:
-    if args.path == "":
-            file_path = "./results/" 
-    else:
-        file_path = "./results_" + args.path + "/"
-elif args.random_mode == 1:
-    if args.path == "":
-        file_path = "./random/"
-    else:
-        file_path = "./random_" + args.path + "/"
+file_path = compute_output_dir(args.random_mode, args.path)
 
 # limit_line = len(ori_numpy)
 limit_line = args.limit_line
@@ -152,61 +150,43 @@ analysis_history = [3, 5, 7, 9]
 err_num_rate = 5
 shifting_rate = 0.1
 
-## 计算当前与上期不重复元素间间隔为1的概率
+try:
+    from .analysis_metrics import cal_not_repeat_rate as _metrics_cal_not_repeat_rate  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.analysis_metrics import cal_not_repeat_rate as _metrics_cal_not_repeat_rate  # type: ignore
+
 def cal_not_repeat_rate(limit=limit_line, result_list=None, j_shiftint=1):
-    total_march = 0
-    march_num = 0
-    if result_list is None:
-        result_list = ori_numpy
-        j_shiftint = 1
-    for i in range(limit):
-        ele_diff = list(set(result_list[i][1:]) & set(ori_numpy[i + j_shiftint][1:]))
-        for item in result_list[i][1:]:
-            total_march += 1
-            if item not in ele_diff and (item + 1 in ori_numpy[i + j_shiftint][1:] or item - 1 in ori_numpy[i + j_shiftint][1:]):
-                march_num += 1
-    march_rate = march_num / total_march
-    # logger.info("{:2f}%".format(march_rate * 100))
-    return march_rate
+    draws = ori_numpy
+    return _metrics_cal_not_repeat_rate(draws, limit, j_shiftint=j_shiftint, result_list=result_list)
 
-## 计算往期重复的概率
+try:
+    from .analysis_metrics import cal_repeat_rate as _metrics_cal_repeat_rate  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.analysis_metrics import cal_repeat_rate as _metrics_cal_repeat_rate  # type: ignore
+
 def cal_repeat_rate(limit=limit_line, result_list=None, j_shiftint=1):
-    march_cal = [0] * (args.cal_nums + 1)
-    march_rate = [0.0] * (args.cal_nums + 1)
-    total_march = 0
-    if result_list is None:
-        result_list = ori_numpy
-        j_shiftint = 1
-    for i in range(limit):
-        for j in range(i + j_shiftint, limit_line):
-            march_num = 0
-            total_march += 1
-            march_num = len(set(result_list[i][1:]) & set(ori_numpy[j][1:]))
-            if len(result_list[i]) > (args.cal_nums + 1):
-                march_num = int(round(march_num / (20 / args.cal_nums), 0))
-            march_cal[march_num] += 1
-    for i in range(args.cal_nums + 1):
-        march_rate[i] = march_cal[i] / total_march
+    draws = ori_numpy
+    return _metrics_cal_repeat_rate(draws, limit, args.cal_nums, j_shiftint=j_shiftint, result_list=result_list)
 
-    # logger.info(march_cal)
-    # logger.info(["{:.2f}%".format(item*100) for item in  march_rate])
-    return march_rate
+try:
+    from .analysis_metrics import cal_hot_cold as _metrics_cal_hot_cold  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.analysis_metrics import cal_hot_cold as _metrics_cal_hot_cold  # type: ignore
 
-## 计算前10的冷热号
 def cal_hot_cold(begin=0, end=limit_line):
-    balls = [0] * 81
-    total_balls = 0
-    for i in range(begin, end):
-        if i >= len(ori_numpy):
-            break
-        for j in range(1, 21):
-            total_balls += 1
-            balls[ori_numpy[i][j]] += 1
-    balls = [(i, round(balls[i] / total_balls, 5)) for i in range(1, 81)]
-    balls.sort(key=lambda x: x[1], reverse=True)
-    # logger.info(balls)
-    balls = [item[0] for item in balls]
-    return balls[:10], balls[-10:]
+    return _metrics_cal_hot_cold(ori_numpy, begin, end)
 
 ## 计算指定号码组在每期出现的概率
 def cal_ball_rate(limit=limit_line, result_list=None, i_shiftint=1):
@@ -232,76 +212,46 @@ def cal_ball_rate(limit=limit_line, result_list=None, i_shiftint=1):
     # logger.info("{:.2f}%".format(cold_ball_rate * 100))
     return hot_ball_rate, cold_ball_rate
 
-## 计算奇偶比:
+try:
+    from .analysis_metrics import cal_ball_parity as _metrics_cal_ball_parity  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.analysis_metrics import cal_ball_parity as _metrics_cal_ball_parity  # type: ignore
+
 def cal_ball_parity(limit=limit_line, result_list=None):
-    odd = 0
-    even = 0
-    if result_list is None:
-        result_list = ori_numpy
-    length = len(result_list[0])
-    for i in range(limit):
-        for j in range(1, length):
-            if result_list[i][j] % 2 == 0:
-                even += 1
-            else:
-                odd += 1
-    # logger.info("{:.2f}%".format(odd / (odd + even) * 100))
-    # logger.info("{:.2f}%".format(even / (odd + even) * 100))
-    return odd / (odd + even), even / (odd + even)
+    draws = ori_numpy if result_list is None else result_list
+    return _metrics_cal_ball_parity(draws, limit)
 
-## 将80个号码分为8组，计算每组的出现概率
+try:
+    from .analysis_metrics import cal_ball_group as _metrics_cal_ball_group  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.analysis_metrics import cal_ball_group as _metrics_cal_ball_group  # type: ignore
+
 def cal_ball_group(limit=limit_line, result_list=None):
-    group = [0] * 8
-    if result_list is None:
-        result_list = ori_numpy
-    length = len(result_list[0])
-    for i in range(limit):
-        for j in range(1, length):
-            group_index = (result_list[i][j] - 1) // 10
-            group[group_index] += 1
-    group_rate = [item / sum(group) for item in group]
-    # logger.info(group_rate)
-    return group_rate
+    draws = ori_numpy if result_list is None else result_list
+    return _metrics_cal_ball_group(draws, limit)
 
-## 找出连续号码的组合
-def find_consecutive_number(numbers):
-    consecutive_group = []
-    group = [numbers[0]]
-    for i in range(1, len(numbers)):
-        if numbers[i] - numbers[i - 1] == 1:
-            group.append(numbers[i])
-        else:
-            if len(group) > 1:
-                consecutive_group.append(tuple(group))
-            group = [numbers[i]]
-    if len(group) > 1:
-        consecutive_group.append(tuple(group))
-    return consecutive_group
+## 找出连续号码的组合（已迁移到 shared_utils.find_consecutive_number）
 
-## 分析连续号码组合
+try:
+    from .analysis_metrics import analysis_consecutive_number as _metrics_analysis_consecutive_number  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.analysis_metrics import analysis_consecutive_number as _metrics_analysis_consecutive_number  # type: ignore
+
 def analysis_consecutive_number(limit=limit_line, result_list=None):
-    consecutive_group = defaultdict(int)
-    total_draws = 0
-    if result_list is None:
-        result_list = ori_numpy
-    length = len(result_list[0])
-    consecutive_rate_list = [0] * length
-    consecutive_rate = [0.0] * length
-    for i in range(limit):
-        numbers = result_list[i][1:length]
-        numbers.sort()
-        consecutive_group_list = find_consecutive_number(numbers)
-        for item in consecutive_group_list:
-            total_draws += 1
-            consecutive_group[item] += 1
-    sorted_consecutive_group = sorted(consecutive_group.items(), key=lambda x: x[1], reverse=True)
-    for item, count in sorted_consecutive_group:
-        consecutive_rate_list[len(item)] += count
-    for i in range(length):
-        if total_draws > 0:
-            consecutive_rate[i] = consecutive_rate_list[i] / total_draws
-    # logger.info(consecutive_rate)
-    return consecutive_rate
+    draws = ori_numpy if result_list is None else result_list
+    return _metrics_analysis_consecutive_number(draws, limit)
 
 ## 分析质数比
 def analysis_prime_number(limit=limit_line, result_list=None):
@@ -612,57 +562,32 @@ def check_rate(result_list):
 
 ## 判断文件夹是否存在，不存在就创建
 def check_dir(path):
-    if not os.path.exists(path):
-        os.makedirs(path, exist_ok=True)
+    ensure_dir(path)
 
-## 多线程调用写入文件
-def write_file(lst,file_name="result"):
-    # t = threading.Thread(target=write_file_core, args=(lst,file_name))
-    t = Process(target=write_file_core, args=(lst,file_name))
-    t.start()
+try:
+    from .shared_utils import write_results_async  # type: ignore
+except Exception:
+    if "PROJECT_ROOT" not in globals():
+        PROJECT_ROOT = Path(__file__).resolve().parents[2]
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.shared_utils import write_results_async  # type: ignore
 
-## 写入文件
-def write_file_core(lst,_file_name="result"):
-    random_number = random.randint(0, 999999)
-    current_time_in = str(int(current_time) + random_number)
-    # 使用简化的文件名生成，避免依赖ori_data
+def write_file(lst, file_name="result"):
     period_num = args.current_nums if args.current_nums != -1 else "next"
-    file_name = file_path + "{}_{}_{}_{}.csv".format(_file_name, current_time_in, args.cal_nums, period_num)
-    while os.path.exists(file_name):
-        random_number = random.randint(0, 999999)
-        current_time_in = str(int(current_time) + random_number)
-        file_name = file_path + "{}_{}_{}_{}.csv".format(_file_name, current_time_in, args.cal_nums, period_num) 
-    with open(file_name, "w") as f:
-        for i in range(args.cal_nums - 1):
-            f.write("b" + str(i + 1) + ",")
-        f.write("b" + str(args.cal_nums) + "\n")
-        cnt = 0
-        item_index = 0
-        for item in lst:
-            if args.multiple > 1:
-                item_index += 1
-                div_nums = args.multiple_ratio.split(",")
-                if item_index % int(div_nums[0]) == int(div_nums[1]):
-                    cnt += 1
-                    for index in range(len(item)-1):
-                        f.write("{},".format(item[index]))
-                    f.write("{}\n".format(item[-1]))
-                    if cnt >= args.total_create:
-                        break
-            else:
-                for index in range(len(item)-1):
-                    f.write("{},".format(item[index]))
-                f.write("{}\n".format(item[-1]))
-## 判断数组中有几个奇数几个偶数
-def check_odd_even(lst):
-    odd = 0
-    even = 0
-    for item in lst:
-        if item % 2 == 0:
-            even += 1
-        else:
-            odd += 1
-    return odd, even
+    write_results_async(
+        rows=lst,
+        file_dir=file_path,
+        file_prefix=file_name,
+        cal_nums=args.cal_nums,
+        total_create=args.total_create,
+        multiple=args.multiple,
+        multiple_ratio=args.multiple_ratio,
+        period_num=str(period_num),
+        current_time_str=current_time,
+        backend="process",
+    )
+## 判断数组中有几个奇数几个偶数（已迁移到 shared_utils.check_odd_even）
 
 ## 计算list中大于0的元素的平均值
 def cal_average(lst):
@@ -943,7 +868,7 @@ def generate_random_numbers(num_rows, num_nums_per_row):
 
 if __name__ == "__main__":
     # 先下载数据（单线程）
-    download_data_if_needed()
+    ensure_data_available(name=name, download_flag=args.download)
     
     # 然后加载数据
     ori_data = pd.read_csv("{}{}".format(name_path[name]["path"], data_file_name))

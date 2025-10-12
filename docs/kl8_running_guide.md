@@ -18,6 +18,39 @@
 
 ## 使用方法
 
+## 并发控制与性能调优
+
+### max_workers 配置指南
+
+并发线程数不是越多越好，需要根据系统配置合理设置：
+
+| 系统配置 | 推荐 max_workers | 内存要求 | 适用场景 |
+|----------|------------------|----------|----------|
+| 4核8GB笔记本 | 2-3 | ≥6GB可用 | 轻量级批处理 |
+| 8核16GB台式机 | 4-6 | ≥12GB可用 | 标准批处理 |
+| 12核32GB工作站 | 6-10 | ≥24GB可用 | 大规模批处理 |
+
+### 性能监控要点
+
+执行批量任务时请关注：
+- **内存使用率**: 建议保持在80%以下
+- **CPU使用率**: 持续>90%表明过载  
+- **磁盘I/O**: 大量结果文件写入的瓶颈
+- **任务完成率**: 异常终止可能表明资源不足
+
+### 渐进式调优策略
+
+```bash
+# 步骤1: 单线程验证
+python src/analysis/kl8_running.py --max_workers 1 --cal_nums_list "5" --total_create_list "10"
+
+# 步骤2: 小规模并发测试  
+python src/analysis/kl8_running.py --max_workers 2 --cal_nums_list "5,8" --total_create_list "50"
+
+# 步骤3: 逐步扩大并发度
+python src/analysis/kl8_running.py --max_workers 4 --cal_nums_list "5,8,10" --total_create_list "100"
+```
+
 ### ⚠️ 重要资源警示
 `kl8_running.py` 会根据传入的参数列表生成大量并行任务（期号 × cal_nums × total_create 的笛卡尔积）。在普通电脑上，过大的参数组合和过多的并发很容易导致内存不足和系统卡顿。务必从小规模、安全的参数开始，逐步放大，并实时观察资源占用。
 
