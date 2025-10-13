@@ -15,6 +15,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 from typing import Iterable, List, Sequence, Tuple
 
 import numpy as np
@@ -22,6 +23,10 @@ import torch
 from torch import nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import GRAPH_EMBED_CONFIG, PATHS
 from src.analysis.shared_download import ensure_data_available
@@ -46,10 +51,10 @@ def _extract_numbers(row: Sequence[int]) -> List[int]:
 def _build_cooccurrence_graph(draws: np.ndarray, decay: float) -> np.ndarray:
     adjacency = np.zeros((80, 80), dtype=float)
     for idx, row in enumerate(draws):
-        numbers = _extract_numbers(row)
+        numbers = [n for n in _extract_numbers(row) if 1 <= n <= 80]
         if len(numbers) < 2:
             continue
-        weight = decay ** idx
+        weight = decay**idx
         for i in numbers:
             for j in numbers:
                 if i != j:
