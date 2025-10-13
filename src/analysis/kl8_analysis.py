@@ -40,7 +40,7 @@ try:
     from sklearn.cluster import KMeans
 except ImportError:
     KMeans = None
-from collections import defaultdict
+from collections import defaultdict, deque
 # 兼容脚本直跑：相对导入失败时，回退到把项目根加入 sys.path 并做绝对导入
 try:
     from ..config import *  # type: ignore
@@ -250,7 +250,15 @@ shiftings = []
 err = -1
 group_size = 50
 prime_list = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79]
-analysis_history = [3, 5, 7, 9]
+ANALYSIS_HISTORY_BASE = [3, 5, 7, 9]
+ANALYSIS_HISTORY_MAX = 15
+ANALYSIS_HISTORY_MIN_LEN = len(ANALYSIS_HISTORY_BASE)
+ANALYSIS_HISTORY_STEP = 2
+ANALYSIS_HISTORY_EXPAND_THRESHOLD = 0.04
+ANALYSIS_HISTORY_SHRINK_THRESHOLD = 0.015
+
+analysis_history = ANALYSIS_HISTORY_BASE.copy()
+_analysis_rate_records: deque[float] = deque(maxlen=20)
 err_num_rate = 5
 
 # 新自适应阈值参数
@@ -1026,6 +1034,10 @@ def analysis_rate(rate_mode=0):
     for i in range(len(avg_rate[1:])):
         result_rate[i] = max(avg_rate[i + 1], ori_shiftings[i])
 
+    if len(avg_rate) > 1:
+        overall_diff = sum(avg_rate[1:]) / len(avg_rate[1:])
+        _record_analysis_rate(overall_diff)
+
     if rate_mode == 1:
         result_rate = len(avg_rate[1:]) * [0.0]
         for i in range(len(avg_rate[1:])):
@@ -1044,6 +1056,39 @@ def check_list_length(lst):
     if len(lst) > args.cal_nums + 1:
         return True
     return False
+
+
+def _record_analysis_rate(overall_diff: float) -> None:
+    global analysis_history
+
+    _analysis_rate_records.append(overall_diff)
+    if len(_analysis_rate_records) < max(4, _analysis_rate_records.maxlen // 2):
+        return
+
+    trend = sum(_analysis_rate_records) / len(_analysis_rate_records)
+
+    if (
+        trend > ANALYSIS_HISTORY_EXPAND_THRESHOLD
+        and max(analysis_history) < ANALYSIS_HISTORY_MAX
+    ):
+        candidate = min(
+            max(analysis_history) + ANALYSIS_HISTORY_STEP, ANALYSIS_HISTORY_MAX
+        )
+        if candidate not in analysis_history:
+            analysis_history.append(candidate)
+            analysis_history = sorted(set(analysis_history))
+            if args.simple_mode == 0:
+                logger.info("analysis_history 扩展: {}", analysis_history)
+        return
+
+    if (
+        trend < ANALYSIS_HISTORY_SHRINK_THRESHOLD
+        and len(analysis_history) > ANALYSIS_HISTORY_MIN_LEN
+    ):
+        removed = max(analysis_history)
+        analysis_history = [w for w in analysis_history if w != removed]
+        if args.simple_mode == 0:
+            logger.info("analysis_history 收缩，移除 {} -> {}", removed, analysis_history)
 
 def init_func(rate_mode=1):
     global shifting, cal_shiftings, limit_line, his_repeat_rate, hot_list, cold_list, hot_rate, cold_rate, his_hot_balls, his_cold_balls, his_odd, his_even, his_group_rate, his_consecutive_rate, his_sum_rate, his_not_repeat_rate, threshold_manager
