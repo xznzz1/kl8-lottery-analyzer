@@ -18,7 +18,7 @@
 
 ```powershell
 .venv\Scripts\python.exe scripts\get_data.py --name kl8
-.venv\Scripts\python.exe scripts\prospective_evaluate.py
+.venv\Scripts\python.exe scripts\prospective_evaluate.py --next-issue 2026188
 ```
 
 前瞻脚本固定读取`data_cache/kl8/data.csv`，只写`results/prospective/`和
@@ -26,9 +26,14 @@
 `D:\lottery\kl8-lottery-analyzer\.venv\Scripts\python.exe`，临时文件固定写
 `D:\lottery\.tmp`。禁止用新增数据重新运行旧holdout切分或选择参数。
 
+运行先校验`config/scientific_freeze.json`中的六文件`source_manifest`，任一哈希变化即
+停止并要求建立新策略版本。下一期号必须来自官方明确值；脚本绝不使用“最新期号+1”。
+当前2026188候选封存为`reports/prospective_manifests/2026188.json`；已有manifest
+只读且不得删除或覆盖，新一期必须创建新文件。提交manifest前不得把候选称为完整事前封存。
+
 运行成功时应核对：每个新增期恰好500条原始记录、摘要120行、下一期候选100行；
 重复运行记录文件SHA-256不变。冲突错误表示历史数据、冻结配置或已有记录不一致，
-应保留现场并检查，不得删除已有记录后静默重算。
+应保留现场并检查，不得删除已有记录或manifest后静默重算。
 
 ## 关键监控指标
 | 项目 | 检查方式 | 目标 |

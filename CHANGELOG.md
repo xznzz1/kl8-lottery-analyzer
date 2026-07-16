@@ -2,12 +2,14 @@
 All notable changes to this project will be documented in this file.
 ## [Unreleased] - 2026-07-16
 ### Added
+- 新增冻结策略源码`source_manifest`与逐期候选封存清单；2026188成为首个提交完整100行预先封存候选集的期号。
 - 新增`config/scientific_freeze.json`与`scripts/prospective_evaluate.py`，在永久冻结旧holdout后按期号幂等累积真正前瞻记录、描述摘要和下一期候选票面。
 - 新增前瞻防泄漏、冻结参数、禁止重新切分/调参、冲突检测、增量追加、旧产物保护、路径边界和票面合法性测试。
 - 新增固定每期4元的严格时间滚动评估，覆盖选一至选十、两种出票方式、20个随机seed、bootstrap区间、配对随机化检验和Holm校正。
 - 新增版本化奖金模型、显式浮动奖情景、精确两注组合概率、风险指标与规定CSV/报告输出。
 - 新增500.com真实81单元格fixture、拒绝行统计、数据元信息、SHA-256、期号倒退保护及官方规则/数据源文档。
 ### Changed
+- 下一候选期号改为显式CLI值或冻结配置明确值，禁止使用`latest_issue + 1`；报告将2026187准确降级表述为首个冻结后样本外观察。
 - 将`repository_advanced`原有的窗口、衰减、特征权重、Dirichlet、PCA设置和科学计算库版本显式化并纳入前瞻冻结校验，不改变其既有算法参数。
 - 前瞻单期摘要只作描述，不把20个seed当独立期开奖，不运行显著性检验、排名或退化的单期置信区间。
 - 科学高级基线禁用训练截止点不明的图嵌入缓存；零方差输入跳过PCA。

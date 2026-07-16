@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import ast
+import csv
 import hashlib
+import io
 import json
-from dataclasses import FrozenInstanceError
+import shutil
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from typing import Any
 
@@ -12,9 +15,11 @@ import pandas as pd
 import pytest
 
 import src.scientific.evaluation as evaluation
-from scripts.prospective_evaluate import build_parser
+import src.scientific.prospective as prospective
+from scripts.prospective_evaluate import build_parser, verify_frozen_source_preflight
 from src.scientific.prospective import (
     EXPECTED_RANDOM_SEEDS,
+    EXPECTED_SOURCE_FILES,
     ProspectivePaths,
     canonical_history_sha256,
     evaluate_new_issues,
@@ -81,6 +86,10 @@ def _prepare_project(
     payload = json.loads(
         (PROJECT_ROOT / "config" / "scientific_freeze.json").read_text(encoding="utf-8")
     )
+    for relative in EXPECTED_SOURCE_FILES:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(PROJECT_ROOT / relative, target)
     frozen_mask = issues <= 2026186
     snapshot = payload["original_data_snapshot"]
     snapshot.update(
@@ -232,9 +241,13 @@ def test_repeat_run_is_idempotent_and_single_issue_is_descriptive(
     paths, _, _ = _prepare_project(tmp_path)
     first = run_prospective_evaluation(paths, bootstrap_samples=10)
     first_bytes = paths.records.read_bytes()
+    first_candidate_bytes = paths.candidates.read_bytes()
+    first_manifest_bytes = first.candidate_manifest.read_bytes()
     second = run_prospective_evaluation(paths, bootstrap_samples=10)
     assert first == second
     assert paths.records.read_bytes() == first_bytes
+    assert paths.candidates.read_bytes() == first_candidate_bytes
+    assert second.candidate_manifest.read_bytes() == first_manifest_bytes
     records = _read_records(paths.records)
     summary = pd.read_csv(paths.summary)
     assert len(records) == 500
@@ -276,6 +289,8 @@ def test_adding_one_draw_only_adds_that_issue(tmp_path: Path) -> None:
     paths, issues, draws = _prepare_project(tmp_path)
     run_prospective_evaluation(paths, bootstrap_samples=10)
     old_records = _read_records(paths.records)
+    old_record_bytes = paths.records.read_bytes()
+    frozen_report_bytes = paths.frozen_report.read_bytes()
 
     new_issues = np.append(issues, 2026188)
     new_draws = np.vstack([draws, _draws(1, offset=71)])
@@ -285,7 +300,11 @@ def test_adding_one_draw_only_adds_that_issue(tmp_path: Path) -> None:
     assert result.prospective_issues == (2026187, 2026188)
     assert len(updated) == 1000
     assert len(updated[updated["issue"] == 2026188]) == 500
-    assert "目前共有 `2` 个真正的前瞻时间簇" in paths.report.read_text(encoding="utf-8")
+    assert paths.records.read_bytes().startswith(old_record_bytes)
+    assert paths.frozen_report.read_bytes() == frozen_report_bytes
+    assert "目前共有 `2` 个冻结后样本外观察期" in paths.report.read_text(
+        encoding="utf-8"
+    )
     pd.testing.assert_frame_equal(
         old_records.sort_values(list(old_records.columns)).reset_index(drop=True),
         updated[updated["issue"] == 2026187]
@@ -360,3 +379,174 @@ def test_next_issue_candidates_are_complete_and_legal(tmp_path: Path) -> None:
     assert set(candidates["output_status"]) == {
         "frozen_strategy_output_not_prediction_or_validity_evidence"
     }
+
+
+def test_changed_frozen_source_fails_before_writes(tmp_path: Path) -> None:
+    paths, _, _ = _prepare_project(tmp_path)
+    first = run_prospective_evaluation(paths, bootstrap_samples=10)
+    protected = {
+        path: path.read_bytes()
+        for path in (
+            paths.records,
+            paths.summary,
+            paths.candidates,
+            paths.report,
+            first.candidate_manifest,
+            paths.frozen_report,
+        )
+    }
+    source = paths.project_root / "src" / "scientific" / "prizes.py"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\n# unauthorized drift\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    with pytest.raises(ValueError, match="必须建立新的策略版本"):
+        verify_frozen_source_preflight(paths.project_root)
+    with pytest.raises(ValueError, match="必须建立新的策略版本"):
+        run_prospective_evaluation(paths, bootstrap_samples=10)
+    assert all(path.read_bytes() == content for path, content in protected.items())
+
+
+def test_candidate_manifest_first_creation_and_exact_content(tmp_path: Path) -> None:
+    paths, issues, draws = _prepare_project(tmp_path)
+    result = run_prospective_evaluation(paths, bootstrap_samples=10)
+    manifest = json.loads(result.candidate_manifest.read_text(encoding="utf-8"))
+    freeze = load_scientific_freeze(paths.freeze_config)
+    candidate_text = paths.candidates.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert result.candidate_manifest == (paths.manifests_dir / "2026188.json").resolve()
+    assert manifest["target_issue"] == 2026188
+    assert manifest["history_through_issue"] == 2026187
+    assert manifest["history_issue_count"] == len(issues)
+    assert manifest["history_canonical_sha256"] == canonical_history_sha256(
+        issues, draws
+    )
+    assert manifest["candidate_count"] == 100
+    assert manifest["candidates"] == list(csv.DictReader(io.StringIO(candidate_text)))
+    assert manifest["freeze_fingerprint"] == freeze.fingerprint
+    assert manifest["source_manifest_fingerprint"] == freeze.source_manifest_fingerprint
+    assert (
+        _normalised_sha256(paths.candidates)
+        == manifest["next_issue_candidates_csv_normalized_sha256"]
+    )
+    for row in manifest["candidates"]:
+        tickets = (
+            tuple(int(value) for value in row["ticket1"].split()),
+            tuple(int(value) for value in row["ticket2"].split()),
+        )
+        assert_legal_tickets(tickets, int(row["play"]), row["ticket_mode"])
+
+
+def test_existing_candidate_manifest_is_never_overwritten(tmp_path: Path) -> None:
+    paths, _, _ = _prepare_project(tmp_path)
+    result = run_prospective_evaluation(paths, bootstrap_samples=10)
+    manifest = json.loads(result.candidate_manifest.read_text(encoding="utf-8"))
+    manifest["candidates"][0]["ticket1"] = "1"
+    result.candidate_manifest.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    corrupted = result.candidate_manifest.read_bytes()
+    protected = {
+        path: path.read_bytes()
+        for path in (paths.records, paths.summary, paths.candidates, paths.report)
+    }
+    with pytest.raises(ValueError, match="禁止覆盖"):
+        run_prospective_evaluation(paths, bootstrap_samples=10)
+    assert result.candidate_manifest.read_bytes() == corrupted
+    assert all(path.read_bytes() == content for path, content in protected.items())
+
+
+def test_candidate_csv_number_change_fails_manifest_check(tmp_path: Path) -> None:
+    paths, issues, draws = _prepare_project(tmp_path)
+    result = run_prospective_evaluation(paths, bootstrap_samples=10)
+    candidates = pd.read_csv(paths.candidates, keep_default_na=False)
+    original_ticket = [int(value) for value in candidates.loc[0, "ticket1"].split()]
+    replacement = next(
+        value for value in range(1, 81) if value not in set(original_ticket)
+    )
+    original_ticket[0] = replacement
+    candidates.loc[0, "ticket1"] = " ".join(map(str, sorted(original_ticket)))
+    candidates.to_csv(paths.candidates, index=False, encoding="utf-8")
+    corrupted = paths.candidates.read_bytes()
+    manifest_bytes = result.candidate_manifest.read_bytes()
+    old_records = paths.records.read_bytes()
+    report_bytes = paths.report.read_bytes()
+    frozen_report_bytes = paths.frozen_report.read_bytes()
+    _write_history(
+        paths.data,
+        np.append(issues, 2026188),
+        np.vstack([draws, _draws(1, offset=71)]),
+    )
+    with pytest.raises(ValueError, match="封存清单内容不一致"):
+        run_prospective_evaluation(paths, bootstrap_samples=10, next_issue=2026189)
+    assert paths.candidates.read_bytes() == corrupted
+    assert result.candidate_manifest.read_bytes() == manifest_bytes
+    assert paths.records.read_bytes() == old_records
+    assert paths.report.read_bytes() == report_bytes
+    assert paths.frozen_report.read_bytes() == frozen_report_bytes
+
+
+def test_default_next_issue_is_explicitly_frozen_not_inferred(tmp_path: Path) -> None:
+    paths, issues, draws = _prepare_project(tmp_path)
+    new_issues = np.append(issues, 2026188)
+    new_draws = np.vstack([draws, _draws(1, offset=71)])
+    _write_history(paths.data, new_issues, new_draws)
+    with pytest.raises(ValueError, match="候选目标期必须晚于"):
+        run_prospective_evaluation(paths, bootstrap_samples=10)
+
+
+def test_manually_constructed_output_path_cannot_escape(tmp_path: Path) -> None:
+    paths, _, _ = _prepare_project(tmp_path)
+    outside = tmp_path / "outside-records.csv"
+    bypassed = replace(paths, records=outside)
+    with pytest.raises(ValueError, match="前瞻路径契约被绕过"):
+        run_prospective_evaluation(bypassed, bootstrap_samples=10)
+    assert not outside.exists()
+
+
+def test_cross_issue_manifest_history_tamper_fails_closed(tmp_path: Path) -> None:
+    paths, issues, draws = _prepare_project(tmp_path)
+    result = run_prospective_evaluation(paths, bootstrap_samples=10)
+    manifest = json.loads(result.candidate_manifest.read_text(encoding="utf-8"))
+    manifest["history_canonical_sha256"] = "0" * 64
+    result.candidate_manifest.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    corrupted_manifest = result.candidate_manifest.read_bytes()
+    protected = {
+        path: path.read_bytes()
+        for path in (paths.records, paths.candidates, paths.report, paths.frozen_report)
+    }
+    _write_history(
+        paths.data,
+        np.append(issues, 2026188),
+        np.vstack([draws, _draws(1, offset=71)]),
+    )
+    with pytest.raises(ValueError, match="封存清单内容不一致"):
+        run_prospective_evaluation(paths, bootstrap_samples=10, next_issue=2026189)
+    assert result.candidate_manifest.read_bytes() == corrupted_manifest
+    assert all(path.read_bytes() == content for path, content in protected.items())
+
+
+def test_manifest_creation_failure_precedes_all_output_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths, _, _ = _prepare_project(tmp_path)
+    frozen_report_bytes = paths.frozen_report.read_bytes()
+
+    def fail_create(*args: object, **kwargs: object) -> None:
+        raise ValueError("injected manifest failure")
+
+    monkeypatch.setattr(prospective, "_create_text_exclusive", fail_create)
+    with pytest.raises(ValueError, match="injected manifest failure"):
+        run_prospective_evaluation(paths, bootstrap_samples=10)
+    assert not any(
+        path.exists()
+        for path in (paths.records, paths.summary, paths.candidates, paths.report)
+    )
+    assert not paths.manifests_dir.exists()
+    assert paths.frozen_report.read_bytes() == frozen_report_bytes

@@ -6,10 +6,11 @@
 - 实现：新增`config/scientific_freeze.json`、`src/scientific/prospective.py`和`scripts/prospective_evaluate.py`；每个新增期生成500条原始记录、120行无机会性排名的描述摘要，并为下一期生成100行合法冻结策略票面。
 - 数据：当前`data_cache/kl8/data.csv`共1631期，新增期2026187的预测历史严格截止2026186；冻结前缀1630期的原CSV SHA-256仍为`fffab75fffd17a9a84f728a3a52c27fc8bc598a5630ffc60a43510dc8a4becb6`。
 - 幂等：同一主键`issue/strategy/seed/play/ticket_mode`重复运行不追加；已有记录会被全量重算逐字段校验，冲突、缺失网格或数据倒退在写入前失败。真实数据重复运行的`prospective_records.csv` SHA-256保持一致。
+- 审计链：运行在任何开奖计算/写入前校验六个指定冻结源码文件的规范化SHA-256；2026188完整100行候选内嵌于`reports/prospective_manifests/2026188.json`，已有期号manifest禁止覆盖，候选CSV跨期覆盖前必须先验封。
 - 保护：旧科学报告与本地旧`final_holdout_results.csv`运行前后SHA-256分别保持`5bc8abb7...eebe9`和`210e7a8f...879c`；前瞻CLI不能把输出指向旧报告或`results/scientific/`。
-- 首次结果：已评估2026187并为2026188生成候选。当前只有1个新增时间簇，20个seed不是20个独立期开奖，因此不运行显著性检验或排名；不能证明任何策略优于随机，也不能证明等效。
-- 质量：Black、isort、Ruff、flake8、严格mypy、compileall和示例运行通过；完整测试`125 passed`，当前约定覆盖范围为`85.78%`，`pip check`无依赖冲突。
-- 复现：`.venv\Scripts\python.exe scripts\prospective_evaluate.py`，输出位于`results/prospective/`和`reports/kl8_prospective_report.md`。完整质量结果在本次Draft PR说明中记录。
+- 首次结果：2026187是首个冻结后样本外观察，但具体票面未事前公开封存；2026188是首个具有完整预先封存候选集的期号。当前只有1个冻结后观察期，20个seed不是20个独立期开奖，因此不运行显著性检验或排名；不能证明任何策略优于随机，也不能证明等效。
+- 质量：Black、isort、Ruff、flake8、严格mypy、compileall和`pip check`通过；完整测试`133 passed`，当前约定覆盖范围为`85.24%`。
+- 复现：`.venv\Scripts\python.exe scripts\prospective_evaluate.py --next-issue 2026188`，输出位于`results/prospective/`、`reports/kl8_prospective_report.md`和版本化逐期manifest。下一期号不作整数加一推断。完整质量结果在本次Draft PR说明中记录。
 
 ## 2026-07-16 快乐8科学评估审计
 

@@ -31,6 +31,19 @@
     202619,
     202620
   ],
+  "source_manifest": {
+    "algorithm": "sha256_utf8_normalized_lf",
+    "files": {
+      "src/scientific/strategies.py": "72c430166233036a403f82be185f0cb9eae4a3f517274eb936ad1d473e043870",
+      "src/scientific/evaluation.py": "d0d8a859ceddb1776df5bd59f578be3e5e576ea0dce1170aaa23d069b2660fd8",
+      "src/scientific/prizes.py": "19d9ebe0e31cf599707e4c02ab0deef7cbb2c4fd94fd6c042cc5eac3c021645b",
+      "src/analysis/feature_enhancer.py": "46fa09871bbf791633ff6cdb078d99d3917e072db598c4319abae5542a9be010",
+      "src/config.py": "ecc9a216d5d954a75c36df0bc7a36a77d1be18ae35a33025d2ac87f17686702c",
+      "config/config.yaml": "03bef7cf395afe7cd8e62adf9e2eb06f2b25b7c27ce7f0e1ccf4154cf0f4f731"
+    },
+    "fingerprint": "2608820ed07898e0b0369eeb6fbd09f937243303ea372232f6bdbfb1735654b3",
+    "change_policy": "任一文件变化必须建立新的策略版本，当前冻结运行立即停止。"
+  },
   "prize_scenario": {
     "mode": "cap_scenario",
     "label": "explicit_rule_cap_scenario_not_actual_payout",
@@ -92,6 +105,8 @@
   },
   "prospective_policy": {
     "first_target_issue": 2026187,
+    "next_issue": 2026188,
+    "first_fully_presealed_candidate_issue": 2026188,
     "never_call": [
       "make_temporal_split",
       "tune_on_validation",

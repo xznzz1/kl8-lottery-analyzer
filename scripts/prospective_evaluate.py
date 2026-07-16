@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -12,11 +14,61 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.scientific.prospective import (  # noqa: E402
-    resolve_prospective_paths,
-    run_prospective_evaluation,
-    validate_runtime_storage,
-)
+SOURCE_MANIFEST_ALGORITHM = "sha256_utf8_normalized_lf"
+REQUIRED_SOURCE_FILES = {
+    "config/config.yaml",
+    "src/analysis/feature_enhancer.py",
+    "src/config.py",
+    "src/scientific/evaluation.py",
+    "src/scientific/prizes.py",
+    "src/scientific/strategies.py",
+}
+
+
+def verify_frozen_source_preflight(project_root: Path = PROJECT_ROOT) -> None:
+    """在导入策略模块前复核冻结源码，防止变更代码被执行。"""
+
+    freeze_path = project_root / "config" / "scientific_freeze.json"
+    payload = json.loads(freeze_path.read_text(encoding="utf-8"))
+    manifest = payload.get("source_manifest")
+    if not isinstance(manifest, dict):
+        raise ValueError("冻结配置缺少source_manifest；必须建立新的策略版本")
+    files = manifest.get("files")
+    if (
+        manifest.get("algorithm") != SOURCE_MANIFEST_ALGORITHM
+        or not isinstance(files, dict)
+        or set(files) != REQUIRED_SOURCE_FILES
+    ):
+        raise ValueError("source_manifest契约不一致；必须建立新的策略版本")
+    fingerprint_payload = {
+        "algorithm": SOURCE_MANIFEST_ALGORITHM,
+        "files": files,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if manifest.get("fingerprint") != fingerprint:
+        raise ValueError("source_manifest指纹不一致；必须建立新的策略版本")
+    root = project_root.resolve()
+    for relative in sorted(REQUIRED_SOURCE_FILES):
+        source_path = (root / relative).resolve()
+        if root not in source_path.parents or not source_path.is_file():
+            raise ValueError(f"冻结策略源码缺失或越界：{relative}")
+        text = (
+            source_path.read_text(encoding="utf-8")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+        )
+        actual = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if actual != files[relative]:
+            raise ValueError(
+                f"冻结策略源码已变化：{relative}；必须建立新的策略版本，" "不能静默继续"
+            )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,7 +109,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--next-issue",
         type=int,
-        help="可选的下一期官方期号；默认使用最新期号加1",
+        help=(
+            "显式下一期官方期号；省略时读取冻结配置中的当前明确值，"
+            "绝不根据最新期号加1推断"
+        ),
     )
     return parser
 
@@ -67,6 +122,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = build_parser().parse_args(argv)
     try:
+        verify_frozen_source_preflight(PROJECT_ROOT)
+        from src.scientific.prospective import (
+            resolve_prospective_paths,
+            run_prospective_evaluation,
+            validate_runtime_storage,
+        )
+
         validate_runtime_storage(PROJECT_ROOT)
         paths = resolve_prospective_paths(
             PROJECT_ROOT,

@@ -40,8 +40,10 @@ flowchart LR
     SCI --> PRIZE[版本化奖金与精确概率]
     SCI --> STATS[bootstrap / 配对随机化 / Holm]
     PRO --> FREEZE[scientific_freeze.json]
+    FREEZE --> SOURCE[六文件源码SHA-256清单]
     PRO --> SCI
     PRO --> PROOUT[(results/prospective + prospective report)]
+    PRO --> SEAL[(reports/prospective_manifests/期号.json)]
 
     CFG --> PATHS[(PATHS & 网络配置)]
 ```
@@ -66,11 +68,11 @@ flowchart LR
 
 ### 冻结后的前瞻数据流
 
-1. 校验`config/scientific_freeze.json`、截止2026186的数据前缀及旧科学产物哈希，不读取或改写旧final holdout结果。
+1. 在导入策略模块和读取开奖前校验`config/scientific_freeze.json`中的六文件源码清单，再校验截止2026186的数据前缀及旧科学产物哈希，不读取或改写旧final holdout结果。
 2. 只选取期号大于2026186的目标；每次调用评估器前把数组截断到目标期，策略输入仍为目标期之前的历史。
 3. 每期生成500条完整记录并与已有CSV逐主键、逐字段重算核对；只追加全新的完整期，冲突时不写任何输出。
 4. 生成120行描述摘要，不把同期开奖上的20个seed当独立时间样本；单期不作显著性检验、排名或区间推断。
-5. 用最新已到达历史生成下一期100行冻结策略票面，并明确标记为非预测、非投注建议。
+5. 用最新已到达历史为显式官方期号生成100行冻结策略票面；逐期manifest内嵌完整候选与历史/源码/CSV哈希，已有期号只读。2026187仅是冻结后样本外观察，2026188才是首个完整预先封存候选集。
 
 ### 🚀 多线程优化模块（Plus版本）
 - **`kl8_analysis_plus.py`**：优化多线程号码生成器

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import io
 import json
@@ -10,7 +11,7 @@ import os
 import sys
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import cast
@@ -47,6 +48,17 @@ EXPECTED_ENVIRONMENT = {
     "pandas": "3.0.3",
     "scikit_learn": "1.9.0",
 }
+SOURCE_MANIFEST_ALGORITHM = "sha256_utf8_normalized_lf"
+EXPECTED_SOURCE_FILES = (
+    "config/config.yaml",
+    "src/analysis/feature_enhancer.py",
+    "src/config.py",
+    "src/scientific/evaluation.py",
+    "src/scientific/prizes.py",
+    "src/scientific/strategies.py",
+)
+EXPECTED_FIRST_PROSPECTIVE_ISSUE = 2026187
+EXPECTED_FIRST_PRESEALED_CANDIDATE_ISSUE = 2026188
 
 RECORD_COLUMNS = (
     "issue",
@@ -76,6 +88,8 @@ class ScientificFreeze:
     decay: float
     hybrid_weights: tuple[float, float, float]
     random_seeds: tuple[int, ...]
+    source_manifest_files: tuple[tuple[str, str], ...]
+    source_manifest_fingerprint: str
     prize_scenario_label: str
     original_data_path: str
     original_earliest_issue: int
@@ -89,6 +103,8 @@ class ScientificFreeze:
     final_holdout_normalized_sha256: str
     selected_parameters_path: str
     selected_parameters_normalized_sha256: str
+    next_issue: int
+    first_fully_presealed_candidate_issue: int
     fingerprint: str
 
     @property
@@ -114,6 +130,7 @@ class ProspectivePaths:
     summary: Path
     candidates: Path
     report: Path
+    manifests_dir: Path
     temp_root: Path
     frozen_report: Path
     frozen_final_holdout: Path
@@ -129,6 +146,7 @@ class ProspectiveRunResult:
     summary_rows: int
     candidate_rows: int
     next_issue: int
+    candidate_manifest: Path
 
 
 def _as_dict(value: object, label: str) -> dict[str, object]:
@@ -153,6 +171,56 @@ def _canonical_json_sha256(payload: dict[str, object]) -> str:
 def _normalised_text_sha256(path: Path) -> str:
     text = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _verify_source_manifest(
+    payload: dict[str, object], project_root: Path
+) -> tuple[tuple[tuple[str, str], ...], str]:
+    """校验冻结策略源码；任何漂移都要求建立新的策略版本。"""
+
+    manifest = _as_dict(payload.get("source_manifest"), "source_manifest")
+    if manifest.get("algorithm") != SOURCE_MANIFEST_ALGORITHM:
+        raise ValueError("source_manifest算法与冻结契约不一致")
+    raw_files = _as_dict(manifest.get("files"), "source_manifest.files")
+    if set(raw_files) != set(EXPECTED_SOURCE_FILES):
+        raise ValueError(
+            "source_manifest文件集合与冻结契约不一致；必须建立新的策略版本"
+        )
+    expected_files = tuple(
+        sorted(
+            (
+                relative,
+                _require_sha256(
+                    raw_files[relative], f"source_manifest.files.{relative}"
+                ),
+            )
+            for relative in EXPECTED_SOURCE_FILES
+        )
+    )
+    fingerprint_payload: dict[str, object] = {
+        "algorithm": SOURCE_MANIFEST_ALGORITHM,
+        "files": dict(expected_files),
+    }
+    configured_fingerprint = _require_sha256(
+        manifest.get("fingerprint"), "source_manifest.fingerprint"
+    )
+    computed_fingerprint = _canonical_json_sha256(fingerprint_payload)
+    if configured_fingerprint != computed_fingerprint:
+        raise ValueError("source_manifest指纹不一致；必须建立新的策略版本，拒绝继续")
+
+    root = project_root.resolve()
+    for relative, expected_hash in expected_files:
+        source_path = (root / relative).resolve()
+        if root not in source_path.parents or not source_path.is_file():
+            raise ValueError(
+                f"冻结策略源码缺失或越界：{relative}；必须建立新的策略版本"
+            )
+        actual_hash = _normalised_text_sha256(source_path)
+        if actual_hash != expected_hash:
+            raise ValueError(
+                f"冻结策略源码已变化：{relative}；必须建立新的策略版本，" "不能静默继续"
+            )
+    return expected_files, configured_fingerprint
 
 
 def _file_sha256(path: Path) -> str:
@@ -194,6 +262,11 @@ def load_scientific_freeze(path: Path) -> ScientificFreeze:
         raise ValueError("不支持的科学冻结配置版本")
     if payload.get("freeze_status") != "viewed_and_permanently_frozen":
         raise ValueError("final holdout必须标记为已查看且永久冻结")
+
+    # 必须先校验源码，再读取运行参数或执行任何前瞻计算。
+    source_manifest_files, source_manifest_fingerprint = _verify_source_manifest(
+        payload, path.resolve().parent.parent
+    )
 
     frozen_through = _as_int(payload["frozen_through_issue"])
     rolling_window = _as_int(payload["rolling_window"])
@@ -298,12 +371,25 @@ def load_scientific_freeze(path: Path) -> ScientificFreeze:
         artifacts["final_holdout_results"], "final_holdout_results"
     )
     selected = _as_dict(artifacts["selected_parameters"], "selected_parameters")
+    policy = _as_dict(payload["prospective_policy"], "prospective_policy")
+    if _as_int(policy.get("first_target_issue", 0)) != EXPECTED_FIRST_PROSPECTIVE_ISSUE:
+        raise ValueError("prospective_policy.first_target_issue与冻结契约不一致")
+    next_issue = _as_int(policy.get("next_issue", 0))
+    first_presealed_issue = _as_int(
+        policy.get("first_fully_presealed_candidate_issue", 0)
+    )
+    if first_presealed_issue != EXPECTED_FIRST_PRESEALED_CANDIDATE_ISSUE:
+        raise ValueError("首个完整预先封存候选期号与冻结契约不一致")
+    if next_issue <= frozen_through:
+        raise ValueError("prospective_policy.next_issue必须晚于冻结截止期")
     return ScientificFreeze(
         frozen_through_issue=frozen_through,
         rolling_window=rolling_window,
         decay=decay,
         hybrid_weights=hybrid_weights,
         random_seeds=random_seeds,
+        source_manifest_files=source_manifest_files,
+        source_manifest_fingerprint=source_manifest_fingerprint,
         prize_scenario_label=scenario_label,
         original_data_path=str(snapshot["path"]),
         original_earliest_issue=_as_int(snapshot["earliest_issue"]),
@@ -326,6 +412,8 @@ def load_scientific_freeze(path: Path) -> ScientificFreeze:
         selected_parameters_normalized_sha256=_require_sha256(
             selected["sha256_utf8_normalized_lf"], "selected_parameters.sha256"
         ),
+        next_issue=next_issue,
+        first_fully_presealed_candidate_issue=first_presealed_issue,
         fingerprint=_canonical_json_sha256(payload),
     )
 
@@ -375,6 +463,9 @@ def resolve_prospective_paths(
     resolved_report = _resolve_exact_path(
         root, report, "reports/kl8_prospective_report.md", "前瞻报告"
     )
+    resolved_manifests = (root / "reports" / "prospective_manifests").resolve()
+    if root not in resolved_manifests.parents:
+        raise ValueError("候选封存目录必须位于仓库reports目录内")
     resolved_temp = (temp_root or root.parent / ".tmp").resolve()
     expected_temp = (root.parent / ".tmp").resolve()
     if resolved_temp != expected_temp:
@@ -390,6 +481,7 @@ def resolve_prospective_paths(
         summary=resolved_output / "prospective_summary.csv",
         candidates=resolved_output / "next_issue_candidates.csv",
         report=resolved_report,
+        manifests_dir=resolved_manifests,
         temp_root=resolved_temp,
         frozen_report=root / "reports" / "kl8_scientific_report.md",
         frozen_final_holdout=root
@@ -401,6 +493,22 @@ def resolve_prospective_paths(
         / "scientific"
         / "selected_parameters.json",
     )
+
+
+def validate_prospective_paths_integrity(paths: ProspectivePaths) -> None:
+    """拒绝绕过resolver手工构造的越界或覆盖路径。"""
+
+    expected = resolve_prospective_paths(
+        paths.project_root,
+        temp_root=paths.temp_root,
+    )
+    if paths != expected:
+        mismatches = [
+            field
+            for field in ProspectivePaths.__dataclass_fields__
+            if getattr(paths, field) != getattr(expected, field)
+        ]
+        raise ValueError(f"前瞻路径契约被绕过：{', '.join(mismatches)}")
 
 
 def canonical_history_sha256(issues: np.ndarray, draws: np.ndarray) -> str:
@@ -802,6 +910,220 @@ def _csv_text(frame: pd.DataFrame) -> str:
     return stream.getvalue()
 
 
+def _build_candidate_manifest(
+    *,
+    freeze: ScientificFreeze,
+    issues: np.ndarray,
+    draws: np.ndarray,
+    candidates: pd.DataFrame,
+    generated_at_utc: str,
+) -> dict[str, object]:
+    """把完整候选CSV封装为可版本控制、可重建的规范化清单。"""
+
+    candidate_text = _csv_text(candidates)
+    candidate_records = list(csv.DictReader(io.StringIO(candidate_text)))
+    if len(candidate_records) != 100:
+        raise ValueError("候选封存清单必须恰好包含100行候选")
+    return {
+        "schema_version": 1,
+        "target_issue": int(candidates["target_issue"].iloc[0]),
+        "generated_at_utc": generated_at_utc,
+        "history_through_issue": int(issues[-1]),
+        "history_issue_count": len(issues),
+        "history_canonical_sha256": canonical_history_sha256(issues, draws),
+        "freeze_fingerprint": freeze.fingerprint,
+        "source_manifest_fingerprint": freeze.source_manifest_fingerprint,
+        "candidate_count": len(candidate_records),
+        "next_issue_candidates_csv_normalized_sha256": hashlib.sha256(
+            candidate_text.encode("utf-8")
+        ).hexdigest(),
+        "candidate_columns": list(candidates.columns),
+        "candidates": candidate_records,
+    }
+
+
+def _verify_existing_candidate_seal(
+    paths: ProspectivePaths,
+    freeze: ScientificFreeze,
+    upcoming_target_issue: int,
+) -> None:
+    """在覆盖当前候选CSV前，先用其所属期号的版本化manifest验封。"""
+
+    if not paths.candidates.exists():
+        return
+    try:
+        existing_candidates = pd.read_csv(
+            paths.candidates, keep_default_na=False, dtype=str
+        )
+        target_values = {
+            int(value) for value in existing_candidates["target_issue"].unique()
+        }
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("已有next_issue_candidates.csv无法识别目标期号") from error
+    if len(target_values) != 1:
+        raise ValueError("已有next_issue_candidates.csv包含多个目标期号")
+    existing_target = target_values.pop()
+    existing_manifest_path = paths.manifests_dir / f"{existing_target}.json"
+    if not existing_manifest_path.exists():
+        if existing_target == upcoming_target_issue:
+            # 兼容本功能上线前已生成但尚未封存的同一期候选；本轮将严格重算封存。
+            return
+        raise ValueError(
+            f"已有期号{existing_target}候选尚无版本化manifest，禁止覆盖为新一期"
+        )
+    try:
+        existing_manifest = _as_dict(
+            json.loads(existing_manifest_path.read_text(encoding="utf-8")),
+            "candidate_manifest",
+        )
+        expected_hash = _require_sha256(
+            existing_manifest["next_issue_candidates_csv_normalized_sha256"],
+            "candidate_manifest.candidate_csv_sha256",
+        )
+    except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"期号{existing_target}的候选封存清单无法验证，禁止覆盖"
+        ) from error
+    normalised_candidate_text = (
+        paths.candidates.read_text(encoding="utf-8")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+    candidate_records = list(csv.DictReader(io.StringIO(normalised_candidate_text)))
+    generated_at_utc = str(existing_manifest.get("generated_at_utc", ""))
+    try:
+        generated_timestamp = datetime.fromisoformat(generated_at_utc)
+    except ValueError as error:
+        raise ValueError(
+            f"期号{existing_target}的候选封存时间不是合法UTC时间，禁止覆盖"
+        ) from error
+    try:
+        candidate_history_issues = {
+            _as_int(row["history_through_issue"]) for row in candidate_records
+        }
+        candidate_history_counts = {
+            _as_int(row["history_issue_count"]) for row in candidate_records
+        }
+        candidate_history_hashes = {
+            str(row["history_fingerprint"]) for row in candidate_records
+        }
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"期号{existing_target}的候选CSV审计字段无效，禁止覆盖"
+        ) from error
+    if (
+        _as_int(existing_manifest.get("schema_version", 0)) != 1
+        or _as_int(existing_manifest.get("target_issue", 0)) != existing_target
+        or _as_int(existing_manifest.get("candidate_count", 0)) != 100
+        or len(_as_sequence(existing_manifest.get("candidates"), "candidates")) != 100
+        or generated_timestamp.utcoffset() != timedelta(0)
+        or existing_manifest.get("candidate_columns")
+        != list(existing_candidates.columns)
+        or existing_manifest.get("candidates") != candidate_records
+        or candidate_history_issues
+        != {_as_int(existing_manifest.get("history_through_issue", 0))}
+        or candidate_history_counts
+        != {_as_int(existing_manifest.get("history_issue_count", 0))}
+        or candidate_history_hashes
+        != {
+            _require_sha256(
+                existing_manifest.get("history_canonical_sha256"),
+                "candidate_manifest.history_canonical_sha256",
+            )
+        }
+        or existing_manifest.get("freeze_fingerprint") != freeze.fingerprint
+        or existing_manifest.get("source_manifest_fingerprint")
+        != freeze.source_manifest_fingerprint
+    ):
+        raise ValueError(
+            f"期号{existing_target}的候选封存清单内容不一致或不完整，禁止覆盖"
+        )
+    if _normalised_text_sha256(paths.candidates) != expected_hash:
+        raise ValueError(
+            f"期号{existing_target}的next_issue_candidates.csv与候选封存清单"
+            "哈希不一致，禁止覆盖"
+        )
+
+
+def _prepare_candidate_manifest(
+    *,
+    paths: ProspectivePaths,
+    freeze: ScientificFreeze,
+    issues: np.ndarray,
+    draws: np.ndarray,
+    candidates: pd.DataFrame,
+) -> tuple[Path, dict[str, object], bool]:
+    """首建manifest；已有manifest只读并逐字段核对，绝不覆盖。"""
+
+    target_issue = int(candidates["target_issue"].iloc[0])
+    _verify_existing_candidate_seal(paths, freeze, target_issue)
+    manifest_path = (paths.manifests_dir / f"{target_issue}.json").resolve()
+    if manifest_path.parent != paths.manifests_dir.resolve():
+        raise ValueError("候选封存清单路径越界")
+
+    existing: dict[str, object] | None = None
+    if manifest_path.exists():
+        try:
+            parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"已有候选封存清单无法解析：{manifest_path}") from error
+        existing = _as_dict(parsed, "candidate_manifest")
+        generated_at_utc = str(existing.get("generated_at_utc", ""))
+        if not generated_at_utc:
+            raise ValueError("已有候选封存清单缺少generated_at_utc，禁止覆盖")
+    else:
+        generated_at_utc = datetime.now(timezone.utc).isoformat()
+
+    expected = _build_candidate_manifest(
+        freeze=freeze,
+        issues=issues,
+        draws=draws,
+        candidates=candidates,
+        generated_at_utc=generated_at_utc,
+    )
+    if existing is not None and existing != expected:
+        raise ValueError(
+            f"期号{target_issue}的已有候选封存清单与重算结果不一致，"
+            "禁止覆盖；请建立新的期号manifest"
+        )
+    if existing is not None and paths.candidates.exists():
+        expected_hash = str(existing["next_issue_candidates_csv_normalized_sha256"])
+        actual_hash = _normalised_text_sha256(paths.candidates)
+        if actual_hash != expected_hash:
+            raise ValueError(
+                "next_issue_candidates.csv与已封存清单哈希不一致，" "禁止静默覆盖"
+            )
+    return manifest_path, expected, existing is None
+
+
+def _create_text_exclusive(path: Path, text: str, temp_root: Path) -> None:
+    """通过同卷硬链接只创建新文件，竞态下也不会覆盖既有manifest。"""
+
+    temp_root.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            delete=False,
+            dir=temp_root,
+            prefix="kl8-manifest-",
+            suffix=".tmp",
+        ) as stream:
+            stream.write(text)
+            stream.flush()
+            temporary = Path(stream.name)
+        try:
+            os.link(temporary, path)
+        except FileExistsError as error:
+            raise ValueError(f"候选封存清单已存在，禁止覆盖：{path}") from error
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
 def _atomic_write_text(path: Path, text: str, temp_root: Path) -> None:
     temp_root.mkdir(parents=True, exist_ok=True)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -833,6 +1155,8 @@ def build_prospective_report(
     summary: pd.DataFrame,
     candidates: pd.DataFrame,
     data_sha256: str,
+    candidate_manifest_path: Path,
+    candidate_manifest: dict[str, object],
 ) -> str:
     """生成强调单期限制和非预测性质的前瞻报告。"""
 
@@ -873,6 +1197,7 @@ def build_prospective_report(
 - 随机基线：`{len(freeze.random_seeds)}` 个冻结seed；这些seed是同期开奖条件下的Monte Carlo重复，不是独立期开奖样本。
 - 冻结数据快照：`{freeze.original_earliest_issue}`—`{freeze.original_latest_issue}`，`{freeze.original_record_count}`期，原CSV SHA-256 `{freeze.original_csv_sha256}`。
 - 冻结配置指纹：`{freeze.fingerprint}`。
+- 冻结策略源码清单指纹：`{freeze.source_manifest_fingerprint}`；运行在读取开奖数据和执行策略前逐文件复核源码。
 - 奖金采用 `{freeze.prize_scenario_label}`；这是规则封顶情景，不代表逐期实际兑付奖金。
 
 ## 当前数据与方法
@@ -881,6 +1206,11 @@ def build_prospective_report(
 - 预测任意目标期 `t` 时，评估器只接收截至该目标期的截断数组，策略输入严格为目标期之前的历史。
 - 已有前瞻记录会按冻结配置全量重算并逐字段校验；同一主键重复运行不追加，任何冲突在写文件前明确失败。
 - 每期固定两注、每注2元。`disjoint`两注无重叠；`independent`在本项目中表示分别优化且允许重叠，并非统计独立，确定性策略通常产生两注相同票面。
+
+## 前瞻证据分级
+
+- `2026187`是**首个冻结后样本外观察**：参数、seed和策略集合已冻结，并按截至`2026186`的历史重放；但其具体票面没有在开奖前通过版本控制公开封存，因此不能表述为已经提前公开封存了具体票面的预测。
+- `2026188`在版本化清单提交后，是**首个具有完整预先封存候选集的期号**。该清单包含完整100行规范化候选、历史指纹、源码清单指纹和候选CSV哈希。
 
 ## 前瞻记录完整性
 
@@ -892,11 +1222,13 @@ def build_prospective_report(
 
 已用截至 `{int(issues[-1])}` 的历史为期号 `{int(candidates['target_issue'].iloc[0])}` 生成 `{len(candidates)}` 行票面，覆盖选一至选十、两种出票方式及五个冻结确定性策略。文件为 `results/prospective/next_issue_candidates.csv`。
 
+本期不可变候选清单为 `{candidate_manifest_path.as_posix()}`，候选CSV规范化SHA-256为 `{candidate_manifest['next_issue_candidates_csv_normalized_sha256']}`。已有期号的清单只读，重算逐字段不一致时立即失败，绝不覆盖。
+
 这些票面只说明冻结代码在当前历史上的确定性输出，不宣称彩票开奖可预测，也不构成投注建议。
 
 ## 限制与后续判定边界
 
-- 目前共有 `{len(prospective_issues)}` 个真正的前瞻时间簇，20个随机seed不能替代更多期开奖。
+- 目前共有 `{len(prospective_issues)}` 个冻结后样本外观察期，20个随机seed不能替代更多期开奖；其中2026187不具有开奖前具体票面封存证据。
 - 不因本期命中、奖金或ROI调整窗口、衰减、权重、高级特征参数、策略集合或seed。
 - 只有在更多未来开奖自然到达后，才能按预先固定的比较方法累积证据；任何新策略主张需要另一个预先声明且未接触的数据段。
 - 浮动奖使用封顶情景，收益字段不能解释为历史实付或确定性ROI。
@@ -915,6 +1247,7 @@ def run_prospective_evaluation(
 
     if bootstrap_samples <= 0:
         raise ValueError("bootstrap_samples必须为正整数")
+    validate_prospective_paths_integrity(paths)
     freeze = load_scientific_freeze(paths.freeze_config)
     issues, draws = load_history_csv(paths.data)
     verify_frozen_inputs(freeze, paths, issues, draws)
@@ -926,10 +1259,18 @@ def run_prospective_evaluation(
     summary = summarise_prospective_records(
         combined_records, freeze, bootstrap_samples=bootstrap_samples
     )
-    candidate_issue = int(next_issue) if next_issue is not None else int(issues[-1]) + 1
+    candidate_issue = int(next_issue) if next_issue is not None else freeze.next_issue
     candidates = generate_next_issue_candidates(
         issues, draws, freeze, next_issue=candidate_issue
     )
+    manifest_path, candidate_manifest, create_manifest = _prepare_candidate_manifest(
+        paths=paths,
+        freeze=freeze,
+        issues=issues,
+        draws=draws,
+        candidates=candidates,
+    )
+    relative_manifest_path = manifest_path.relative_to(paths.project_root)
     report = build_prospective_report(
         freeze=freeze,
         issues=issues,
@@ -937,13 +1278,29 @@ def run_prospective_evaluation(
         summary=summary,
         candidates=candidates,
         data_sha256=_file_sha256(paths.data),
+        candidate_manifest_path=relative_manifest_path,
+        candidate_manifest=candidate_manifest,
     )
 
-    # 所有冲突检查先完成，之后才原子替换各前瞻输出。
-    _atomic_write_text(paths.records, _csv_text(combined_records), paths.temp_root)
-    _atomic_write_text(paths.summary, _csv_text(summary), paths.temp_root)
-    _atomic_write_text(paths.candidates, _csv_text(candidates), paths.temp_root)
-    _atomic_write_text(paths.report, report, paths.temp_root)
+    # 所有冲突检查先完成；新manifest先排他创建，失败时尚未改写任何输出。
+    manifest_created = False
+    if create_manifest:
+        manifest_text = (
+            json.dumps(candidate_manifest, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n"
+        )
+        _create_text_exclusive(manifest_path, manifest_text, paths.temp_root)
+        manifest_created = True
+    try:
+        _atomic_write_text(paths.records, _csv_text(combined_records), paths.temp_root)
+        _atomic_write_text(paths.summary, _csv_text(summary), paths.temp_root)
+        _atomic_write_text(paths.candidates, _csv_text(candidates), paths.temp_root)
+        _atomic_write_text(paths.report, report, paths.temp_root)
+    except BaseException:
+        # 只回滚本次刚创建、尚未形成完整输出状态的manifest；既有manifest永不删除。
+        if manifest_created and manifest_path.exists():
+            manifest_path.unlink()
+        raise
     prospective_issues = tuple(sorted(map(int, combined_records["issue"].unique())))
     return ProspectiveRunResult(
         prospective_issues=prospective_issues,
@@ -951,6 +1308,7 @@ def run_prospective_evaluation(
         summary_rows=len(summary),
         candidate_rows=len(candidates),
         next_issue=candidate_issue,
+        candidate_manifest=manifest_path,
     )
 
 
@@ -960,6 +1318,7 @@ __all__ = [
     "EXPECTED_HYBRID_WEIGHTS",
     "EXPECTED_RANDOM_SEEDS",
     "EXPECTED_ROLLING_WINDOW",
+    "EXPECTED_SOURCE_FILES",
     "OUTPUT_STATUS",
     "ProspectivePaths",
     "ProspectiveRunResult",
@@ -973,7 +1332,9 @@ __all__ = [
     "reconcile_records",
     "resolve_prospective_paths",
     "run_prospective_evaluation",
+    "SOURCE_MANIFEST_ALGORITHM",
     "summarise_prospective_records",
+    "validate_prospective_paths_integrity",
     "validate_runtime_storage",
     "verify_frozen_inputs",
 ]
