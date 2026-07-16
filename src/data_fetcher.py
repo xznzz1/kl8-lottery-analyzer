@@ -156,10 +156,11 @@ def _parse_issue_list(config: LotteryModelConfig, html: str) -> pd.DataFrame:
 
 
 def _parse_kl8_sequence(text: str) -> pd.DataFrame:
-    """解析917500顺序数据。
+    """解析917500顺序数据，并兼容不带日期的测试/旧数据。
 
-    每行格式为：
-    期号 日期 20个开奖号码,销售额及其他统计信息
+    支持两种格式：
+    1. 期号 日期 20个开奖号码,销售额及其他统计信息
+    2. 期号 20个开奖号码,其他内容
     """
 
     rows = []
@@ -169,20 +170,27 @@ def _parse_kl8_sequence(text: str) -> pd.DataFrame:
         if not line or "," not in line:
             continue
 
-        # 第一个逗号之前包含：期号、日期、20个开奖号码，
-        # 以及销售额的第一段，因此不能用数值范围筛选整段。
         first_segment = line.split(",", 1)[0]
         parts = first_segment.split()
 
-        # 期号 + 日期 + 20个号码，至少需要22个字段。
-        if len(parts) < 22:
+        if len(parts) < 21:
             continue
 
         issue = parts[0].strip()
-        number_tokens = parts[2:22]
-
         if not issue.isdigit():
             continue
+
+        # 真实数据第二项为YYYY-MM-DD；旧数据或测试样例没有日期。
+        second = parts[1] if len(parts) > 1 else ""
+        has_date = (
+            len(second) == 10
+            and second[4:5] == "-"
+            and second[7:8] == "-"
+            and second.replace("-", "").isdigit()
+        )
+
+        number_start = 2 if has_date else 1
+        number_tokens = parts[number_start:number_start + 20]
 
         if len(number_tokens) != 20:
             continue
@@ -193,10 +201,11 @@ def _parse_kl8_sequence(text: str) -> pd.DataFrame:
         ):
             continue
 
-        numbers = [str(int(token)) for token in number_tokens]
-
-        if len(set(numbers)) != 20:
+        if len({int(token) for token in number_tokens}) != 20:
             continue
+
+        # 保留两位号码格式，如01、02；读取CSV时仍可转成整数。
+        numbers = [f"{int(token):02d}" for token in number_tokens]
 
         record = {"期数": issue}
         for index, value in enumerate(numbers, start=1):
