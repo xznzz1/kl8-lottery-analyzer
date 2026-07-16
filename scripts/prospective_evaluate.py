@@ -17,10 +17,13 @@ if str(PROJECT_ROOT) not in sys.path:
 SOURCE_MANIFEST_ALGORITHM = "sha256_utf8_normalized_lf"
 REQUIRED_SOURCE_FILES = {
     "config/config.yaml",
+    "scripts/prospective_evaluate.py",
     "src/analysis/feature_enhancer.py",
     "src/config.py",
     "src/scientific/evaluation.py",
     "src/scientific/prizes.py",
+    "src/scientific/prospective.py",
+    "src/scientific/statistics.py",
     "src/scientific/strategies.py",
 }
 

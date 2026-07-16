@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - 新增版本化奖金模型、显式浮动奖情景、精确两注组合概率、风险指标与规定CSV/报告输出。
 - 新增500.com真实81单元格fixture、拒绝行统计、数据元信息、SHA-256、期号倒退保护及官方规则/数据源文档。
 ### Changed
+- `source_manifest`补充前瞻评估器、统计汇总与CLI入口，形成九文件冻结源码集合；2026188票面投影保持逐字段不变，仅更新审计指纹及相关哈希。
 - 下一候选期号改为显式CLI值或冻结配置明确值，禁止使用`latest_issue + 1`；报告将2026187准确降级表述为首个冻结后样本外观察。
 - 将`repository_advanced`原有的窗口、衰减、特征权重、Dirichlet、PCA设置和科学计算库版本显式化并纳入前瞻冻结校验，不改变其既有算法参数。
 - 前瞻单期摘要只作描述，不把20个seed当独立期开奖，不运行显著性检验、排名或退化的单期置信区间。

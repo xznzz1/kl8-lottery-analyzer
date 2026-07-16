@@ -5,6 +5,7 @@ import csv
 import hashlib
 import io
 import json
+import re
 import shutil
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
@@ -16,7 +17,11 @@ import pytest
 
 import src.scientific.evaluation as evaluation
 import src.scientific.prospective as prospective
-from scripts.prospective_evaluate import build_parser, verify_frozen_source_preflight
+from scripts.prospective_evaluate import (
+    REQUIRED_SOURCE_FILES,
+    build_parser,
+    verify_frozen_source_preflight,
+)
 from src.scientific.prospective import (
     EXPECTED_RANDOM_SEEDS,
     EXPECTED_SOURCE_FILES,
@@ -31,6 +36,16 @@ from src.scientific.strategies import assert_legal_tickets
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 NUMBER_COLUMNS = [f"红球_{index}" for index in range(1, 21)]
+TICKET_PROJECTION_COLUMNS = (
+    "strategy",
+    "play",
+    "ticket_mode",
+    "ticket1",
+    "ticket2",
+)
+EXPECTED_2026188_TICKET_PROJECTION_SHA256 = (
+    "5111264f6f0fd8d1c8d41a1639d2224d44100f6eba2e3e0dd5773141ae19e900"
+)
 
 
 def _draws(rows: int, *, offset: int = 0) -> np.ndarray:
@@ -45,6 +60,23 @@ def _draws(rows: int, *, offset: int = 0) -> np.ndarray:
 
 def _normalised_sha256(path: Path) -> str:
     text = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _ticket_projection_sha256(rows: list[dict[str, object]]) -> str:
+    projection = [
+        {column: row[column] for column in TICKET_PROJECTION_COLUMNS} for row in rows
+    ]
+    projection.sort(
+        key=lambda row: (
+            str(row["strategy"]),
+            int(str(row["play"])),
+            str(row["ticket_mode"]),
+        )
+    )
+    text = json.dumps(
+        projection, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -175,11 +207,19 @@ def test_target_prediction_only_receives_prior_history(
 
 def test_freeze_config_is_exact_and_not_cli_tunable() -> None:
     freeze = load_scientific_freeze(PROJECT_ROOT / "config" / "scientific_freeze.json")
+    payload = json.loads(
+        (PROJECT_ROOT / "config" / "scientific_freeze.json").read_text(encoding="utf-8")
+    )
     assert freeze.frozen_through_issue == 2026186
     assert freeze.rolling_window == 120
     assert freeze.decay == 0.99
     assert freeze.hybrid_weights == (0.25, 0.50, 0.25)
     assert freeze.random_seeds == EXPECTED_RANDOM_SEEDS
+    assert (
+        set(EXPECTED_SOURCE_FILES)
+        == REQUIRED_SOURCE_FILES
+        == set(payload["source_manifest"]["files"])
+    )
     with pytest.raises(FrozenInstanceError):
         freeze.decay = 0.97  # type: ignore[misc]
     destinations = {action.dest for action in build_parser()._actions}
@@ -381,7 +421,18 @@ def test_next_issue_candidates_are_complete_and_legal(tmp_path: Path) -> None:
     }
 
 
-def test_changed_frozen_source_fails_before_writes(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "relative_source",
+    (
+        "src/scientific/prizes.py",
+        "src/scientific/prospective.py",
+        "src/scientific/statistics.py",
+        "scripts/prospective_evaluate.py",
+    ),
+)
+def test_changed_frozen_source_fails_before_writes(
+    tmp_path: Path, relative_source: str
+) -> None:
     paths, _, _ = _prepare_project(tmp_path)
     first = run_prospective_evaluation(paths, bootstrap_samples=10)
     protected = {
@@ -395,17 +446,48 @@ def test_changed_frozen_source_fails_before_writes(tmp_path: Path) -> None:
             paths.frozen_report,
         )
     }
-    source = paths.project_root / "src" / "scientific" / "prizes.py"
+    source = paths.project_root / relative_source
     source.write_text(
         source.read_text(encoding="utf-8") + "\n# unauthorized drift\n",
         encoding="utf-8",
         newline="\n",
     )
-    with pytest.raises(ValueError, match="必须建立新的策略版本"):
+    expected_error = rf"{re.escape(relative_source)}.*必须建立新的策略版本"
+    with pytest.raises(ValueError, match=expected_error):
         verify_frozen_source_preflight(paths.project_root)
-    with pytest.raises(ValueError, match="必须建立新的策略版本"):
+    with pytest.raises(ValueError, match=expected_error):
         run_prospective_evaluation(paths, bootstrap_samples=10)
     assert all(path.read_bytes() == content for path, content in protected.items())
+
+
+def test_committed_2026188_ticket_projection_matches_original_contract() -> None:
+    manifest = json.loads(
+        (PROJECT_ROOT / "reports" / "prospective_manifests" / "2026188.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    candidates = manifest["candidates"]
+    actual_grid = {
+        (row["strategy"], int(row["play"]), row["ticket_mode"]) for row in candidates
+    }
+    expected_grid = {
+        (strategy, play, ticket_mode)
+        for strategy in (
+            "exponential_frequency",
+            "historical_frequency",
+            "hybrid",
+            "repository_advanced",
+            "rolling_frequency",
+        )
+        for play in range(1, 11)
+        for ticket_mode in ("disjoint", "independent")
+    }
+    assert len(candidates) == 100
+    assert actual_grid == expected_grid
+    assert (
+        _ticket_projection_sha256(candidates)
+        == EXPECTED_2026188_TICKET_PROJECTION_SHA256
+    )
 
 
 def test_candidate_manifest_first_creation_and_exact_content(tmp_path: Path) -> None:

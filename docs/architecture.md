@@ -40,7 +40,7 @@ flowchart LR
     SCI --> PRIZE[版本化奖金与精确概率]
     SCI --> STATS[bootstrap / 配对随机化 / Holm]
     PRO --> FREEZE[scientific_freeze.json]
-    FREEZE --> SOURCE[六文件源码SHA-256清单]
+    FREEZE --> SOURCE[九文件源码SHA-256清单]
     PRO --> SCI
     PRO --> PROOUT[(results/prospective + prospective report)]
     PRO --> SEAL[(reports/prospective_manifests/期号.json)]
@@ -68,7 +68,7 @@ flowchart LR
 
 ### 冻结后的前瞻数据流
 
-1. 在导入策略模块和读取开奖前校验`config/scientific_freeze.json`中的六文件源码清单，再校验截止2026186的数据前缀及旧科学产物哈希，不读取或改写旧final holdout结果。
+1. 在导入策略模块和读取开奖前校验`config/scientific_freeze.json`中的九文件源码清单，再校验截止2026186的数据前缀及旧科学产物哈希，不读取或改写旧final holdout结果。
 2. 只选取期号大于2026186的目标；每次调用评估器前把数组截断到目标期，策略输入仍为目标期之前的历史。
 3. 每期生成500条完整记录并与已有CSV逐主键、逐字段重算核对；只追加全新的完整期，冲突时不写任何输出。
 4. 生成120行描述摘要，不把同期开奖上的20个seed当独立时间样本；单期不作显著性检验、排名或区间推断。

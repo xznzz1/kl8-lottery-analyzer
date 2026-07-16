@@ -26,7 +26,7 @@
 `D:\lottery\kl8-lottery-analyzer\.venv\Scripts\python.exe`，临时文件固定写
 `D:\lottery\.tmp`。禁止用新增数据重新运行旧holdout切分或选择参数。
 
-运行先校验`config/scientific_freeze.json`中的六文件`source_manifest`，任一哈希变化即
+运行先校验`config/scientific_freeze.json`中的九文件`source_manifest`，任一哈希变化即
 停止并要求建立新策略版本。下一期号必须来自官方明确值；脚本绝不使用“最新期号+1”。
 当前2026188候选封存为`reports/prospective_manifests/2026188.json`；已有manifest
 只读且不得删除或覆盖，新一期必须创建新文件。提交manifest前不得把候选称为完整事前封存。
