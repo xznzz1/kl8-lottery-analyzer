@@ -1,5 +1,16 @@
 ﻿# Changelog
 All notable changes to this project will be documented in this file.
+## [Unreleased] - 2026-07-16
+### Added
+- 新增固定每期4元的严格时间滚动评估，覆盖选一至选十、两种出票方式、20个随机seed、bootstrap区间、配对随机化检验和Holm校正。
+- 新增版本化奖金模型、显式浮动奖情景、精确两注组合概率、风险指标与规定CSV/报告输出。
+- 新增500.com真实81单元格fixture、拒绝行统计、数据元信息、SHA-256、期号倒退保护及官方规则/数据源文档。
+### Changed
+- 科学高级基线禁用训练截止点不明的图嵌入缓存；零方差输入跳过PCA。
+- legacy下载入口不再吞掉严格下载器的完整性异常。
+### Security
+- 修复域名白名单的相似域绕过，并采用原子写入防止损坏数据覆盖。
+
 ## [1.4.0] - 2025-10-14 🎲 Copula 采样与图嵌入融合
 ### Added
 - 新增 `src/analysis/copula_sampler.py` 与 `generate_copula_candidates`，在高级模式中提供 Copula 多样性采样。

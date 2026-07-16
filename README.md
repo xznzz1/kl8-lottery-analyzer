@@ -1,6 +1,6 @@
 # KL8 (快乐 8) 数据分析工具集
 
-本仓库围绕 `src/analysis` 目录的脚本提供快乐 8 历史数据下载、统计分析、候选组合生成与收益回测能力。当前版本聚焦离线分析，深度训练流程已拆分。
+本仓库提供快乐8历史数据下载、统计分析和严格时间滚动评估。科学评估的目标是检验策略能否在样本外优于随机选号，不宣称能够预测随机开奖；深度训练流程保持可选。
 
 > **环境建议**：请始终在名为 `python311` 的 Conda 环境或等效的 Python 3.11 虚拟环境中执行命令，以保持依赖一致。
 
@@ -8,6 +8,7 @@
 - 🔄 `scripts/get_data.py`：下载快乐 8 历史数据，支持顺序出球模式。
 - 📦 `src/common.py`：封装数据下载、期号查询与历史数据加载。
 - 🌐 `src/data_fetcher.py`：带域名白名单、超时与重试机制的抓取器。
+- 🔬 `scripts/backtest_baselines.py`：固定每期4元，比较选一至选十、两种出票方式和多种无泄漏策略。
 - 🎯 `src/analysis/feature_enhancer.py`：整合近期动量、共现谱、Dirichlet 平滑、PCA 与图嵌入的综合特征评分。
 - 🧮 `src/analysis/rule_miner.py`：基于 FP-Growth 的频繁项集与关联规则筛选，支持软/硬模式。
 - 🎲 `src/analysis/copula_sampler.py`：高斯 Copula 多样性采样，结合互信息惩罚提升组合相关性建模。
@@ -19,9 +20,15 @@
 conda activate python311
 make setup
 make download-data             # 可重复执行，获取最新历史数据
-make train-graph               # 可选：训练/更新图嵌入缓存
-make run                       # 运行基础示例
+make scientific-backtest       # 生成CSV与科学报告（显式封顶情景）
 ```
+
+完整数据和 `results/` 默认不提交。回测产物包括 `results/scientific/*.csv` 与
+`reports/kl8_scientific_report.md`。浮动奖封顶情景只用于敏感性演示，不是逐期实际
+兑付；规则版本和替代输入见 [官方规则说明](docs/official_rules.md)。
+
+PyTorch不是下载、统计和科学回测依赖。图嵌入训练仅是可选旧功能；科学holdout默认
+禁用无法证明训练截止点的全样本图嵌入缓存。
 
 ## 一键启用全算法
 以下命令会同时启用高级模式（遗传 + 贝叶斯 + Copula + 互信息惩罚）、特征增强、关联规则过滤以及可调的 Copula 采样参数：
@@ -89,6 +96,7 @@ python src/analysis/kl8_analysis.py \
 ├── scripts/               # 数据下载与图嵌入训练脚本
 ├── src/
 │   ├── analysis/          # 核心分析脚本与工具
+│   ├── scientific/        # 无泄漏策略、奖金、统计检验与滚动评估
 │   ├── common.py          # 公共接口
 │   ├── config.py          # 快乐 8 配置入口
 │   └── data_fetcher.py    # 历史数据抓取
@@ -109,6 +117,9 @@ python src/analysis/kl8_analysis.py \
 5. **Copula / 图嵌入如何维护？**  
    - 建议定期运行 `make train-graph` 更新嵌入。  
    - Copula 采样需确保 `limit_line` 不小于 `analysis.copula.min_draws`（默认 180），不足时会自动退回传统策略。
+6. **旧高级脚本能直接当科学回测吗？**
+   不能。审计发现部分旧流程存在倒序索引、全样本预处理或缓存截止点不明的问题。
+   请使用 `scripts/backtest_baselines.py`；它按期号升序并保证预测第t期只读取t之前数据。
 
 ## `kl8_running.py` 资源提示
 批量运行会按参数列表笛卡尔展开生成大量任务（每个期号 × cal_nums × total_create），容易造成内存和文件句柄压力。请从小规模参数起步，确认后再逐步放大，同时监控 `max_workers`、内存及磁盘空间。

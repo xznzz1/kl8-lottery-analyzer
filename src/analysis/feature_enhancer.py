@@ -26,8 +26,8 @@ except ImportError:  # pragma: no cover - optional依赖
 try:
     from ..config import DIRICHLET_CONFIG, GRAPH_EMBED_CONFIG
 except Exception:  # pragma: no cover - 脚本直跑时的路径回退
-    from pathlib import Path as _Path
     import sys
+    from pathlib import Path as _Path
 
     PROJECT_ROOT = _Path(__file__).resolve().parents[2]
     if str(PROJECT_ROOT) not in sys.path:
@@ -144,7 +144,9 @@ def _compute_graph_embedding_scores(draws: np.ndarray, limit: int) -> np.ndarray
         norms = np.linalg.norm(embeddings, axis=1)
         cosine = np.zeros(embeddings.shape[0], dtype=float)
         valid = norms > 1e-9
-        cosine[valid] = (embeddings[valid] @ reference) / (norms[valid] * reference_norm)
+        cosine[valid] = (embeddings[valid] @ reference) / (
+            norms[valid] * reference_norm
+        )
         values = cosine
     else:
         values = np.linalg.norm(embeddings, axis=1)
@@ -260,7 +262,9 @@ def _compute_dirichlet_scores(
         return zero, zero, zero
 
     posterior_mean = posterior_alpha / alpha_sum
-    variance = (posterior_alpha * (alpha_sum - posterior_alpha)) / (alpha_sum**2 * (alpha_sum + 1.0))
+    variance = (posterior_alpha * (alpha_sum - posterior_alpha)) / (
+        alpha_sum**2 * (alpha_sum + 1.0)
+    )
     adjusted = posterior_mean - variance_weight * np.sqrt(np.maximum(variance, 0.0))
     dirichlet_scores = _normalise(adjusted)
 
@@ -277,8 +281,14 @@ def compute_enhanced_scores(
     dirichlet_weight: float | None = None,
     pca_components: int = 1,
     use_pca: bool = True,
+    use_graph_embeddings: bool = True,
 ) -> Tuple[List[Tuple[Number, Score]], FeatureDebugInfo]:
-    """汇总多源特征，返回排序结果与调试信息。"""
+    """汇总多源特征，返回排序结果与调试信息。
+
+    ``use_graph_embeddings=False`` 用于严格的时间滚动回测。外部图嵌入缓存
+    若由完整数据集训练，可能包含预测时点之后的信息；回测调用方必须显式禁用，
+    或提供仅由当时可见历史训练的缓存。
+    """
 
     if draws.size == 0:
         empty = FeatureDebugInfo({}, {}, {}, {}, {}, {}, {}, [])
@@ -304,14 +314,20 @@ def compute_enhanced_scores(
         variance_weight=max(DIRICHLET_CONFIG["variance_weight"], 0.0),
     )
 
-    graph_scores = _compute_graph_embedding_scores(draws, limit)
+    graph_scores = (
+        _compute_graph_embedding_scores(draws, limit)
+        if use_graph_embeddings
+        else np.zeros(81, dtype=float)
+    )
 
     pca_scores = np.zeros(81, dtype=float)
     if use_pca and PCA is not None:
         numbers_matrix = _numbers_matrix(draws, limit=min(limit, draws.shape[0]))
         try:
-            pca = PCA(n_components=pca_components)
-            pca.fit(numbers_matrix)
+            # 所有特征均为零方差时PCA没有信息量，直接保留零分并避免运行时警告。
+            if float(np.var(numbers_matrix, axis=0).sum()) <= 1e-12:
+                raise ValueError("PCA输入为零方差")
+            pca = PCA(n_components=pca_components).fit(numbers_matrix)
             if pca_components == 1:
                 pc1 = pca.components_[0]
                 pc1_norm = _normalise(pc1)

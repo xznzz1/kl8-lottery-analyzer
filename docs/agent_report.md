@@ -1,5 +1,14 @@
 # 本次自动执行报告 | Automation Execution Report
 
+## 2026-07-16 快乐8科学评估审计
+
+- 数据：实时复核500.com全量响应，1,955个原始行中1,630个有效期开奖行、325个空白分隔行，期号2021313—2026186；CSV和HTML未提交。
+- 实现：新增`src/scientific/`和`scripts/backtest_baselines.py`，固定两注4元，覆盖十种玩法、两种出票方式、六类策略、20个随机seed、区间估计、风险和多重检验。
+- 防泄漏：最终326期为未接触holdout；261期滚动验证选择预注册参数。禁用全样本图嵌入和不可审计缓存。
+- 奖金：按2025350切换规则版本，浮动奖采用显式情景；报告明确区分名义/情景奖金与实际兑付。
+- 结果：100个主检验组合中，没有任何策略在Holm校正后显著优于随机基线。
+- 复现：`python scripts/get_data.py --name kl8`，随后`python scripts/backtest_baselines.py --data data/kl8/data.csv --floating-prize-mode cap-scenario`。
+
 ## 2025-10-14 Copula 采样与图嵌入扩展
 - 在高级候选生成中引入 Copula 多样性采样与互信息惩罚（`src/analysis/copula_sampler.py`、`src/analysis/mutual_information.py`），提升号码相关性建模。
 - 新增图嵌入训练脚本 `scripts/train_graph_embeddings.py`（PyTorch Node2Vec），自动适配 CPU / GPU / AMD ROCm，并生成 `graph_embedding_scores`。

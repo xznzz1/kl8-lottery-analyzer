@@ -1,6 +1,6 @@
 # KL8 分析工具 Makefile
 
-.PHONY: setup fmt lint test build run train-graph download-data ci clean help
+.PHONY: setup fmt lint test build run train-graph download-data scientific-backtest ci clean help
 .DEFAULT_GOAL := help
 
 PYTHON ?= python
@@ -42,6 +42,9 @@ train-graph: ## 训练共现图嵌入缓存
 download-data: ## 下载快乐8历史数据
 	$(PYTHON) scripts/get_data.py --name kl8
 
+scientific-backtest: ## 固定4元预算的无泄漏科学回测（封顶奖金情景）
+	$(PYTHON) scripts/backtest_baselines.py --data data/kl8/data.csv --floating-prize-mode cap-scenario
+
 ci: fmt lint test build ## 本地 CI
 	@echo "本地 CI 全部通过"
 
@@ -55,6 +58,7 @@ help: ## 查看可用命令
 	@echo "可用任务："
 	@echo "  make setup          - 安装依赖并初始化目录"
 	@echo "  make download-data  - 下载快乐8历史数据"
+	@echo "  make scientific-backtest - 生成严格时间滚动评估与报告"
 	@echo "  make fmt            - 格式化代码"
 	@echo "  make lint           - 静态检查"
 	@echo "  make test           - 运行测试"

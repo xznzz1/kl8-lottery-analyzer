@@ -12,7 +12,6 @@ from typing import Optional
 
 from .data_fetcher import download_history, get_current_issue, load_history
 
-
 SUPPORTED_LOTTERIES = {"kl8"}
 
 
@@ -40,16 +39,20 @@ def get_data_run(
 
     code = _ensure_supported_lottery(name)
 
-    use_sequence_order = (
-        bool(cq)
-        if sequence_mode is None
-        else bool(sequence_mode)
-    )
+    use_sequence_order = bool(cq) if sequence_mode is None else bool(sequence_mode)
+
+    def coerce_issue(value: int | str | None) -> int | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text.isdigit():
+            raise ValueError(f"期号必须为正整数，收到：{value!r}")
+        return int(text)
 
     return download_history(
         code,
-        start=start_issue,
-        end=end_issue,
+        start=coerce_issue(start_issue),
+        end=coerce_issue(end_issue),
         use_sequence_order=use_sequence_order,
     )
 
@@ -85,9 +88,7 @@ def __getattr__(name: str):
     try:
         return getattr(legacy, name)
     except AttributeError as exc:
-        raise AttributeError(
-            f"模块src.common没有属性{name!r}"
-        ) from exc
+        raise AttributeError(f"模块src.common没有属性{name!r}") from exc
 
 
 __all__ = [

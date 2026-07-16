@@ -4,16 +4,21 @@
 
 | 模块 | 函数 | 参数 | 返回值 | 说明 |
 |------|------|------|--------|------|
-| `src.common` | `get_data_run(name, sequence_mode=False, start_issue=None, end_issue=None)` | 彩票代号；是否抓取顺序数据；期号区间 | `None` | 下载快乐 8 历史数据并写入 `data/kl8/data.csv`。 |
+| `src.common` | `get_data_run(name, sequence_mode=False, start_issue=None, end_issue=None)` | 彩票代号；是否抓取顺序数据；期号区间 | `DownloadResult` | 下载快乐 8 历史数据并写入 `data/kl8/data.csv`。 |
 | `src.common` | `get_current_number(name)` | 彩票代号 | `str` | 读取快乐 8 最新期号。 |
 | `src.common` | `load_history(name)` | 彩票代号 | `pandas.DataFrame` | 从本地 CSV 加载历史开奖数据。 |
 | `src.data_fetcher` | `download_history(code, start=None, end=None, use_sequence_order=False, client=None)` | 彩票代号、期号区间、顺序模式、HTTP 客户端 | `DownloadResult` | 带重试和白名单校验的抓取实现。 |
 | `src.data_fetcher` | `get_current_issue(code, client=None)` | 彩票代号、可选 HTTP 客户端 | `str` | 获取官网最新期号。 |
 | `src.data_fetcher` | `load_history(code)` | 彩票代号 | `pandas.DataFrame` | 与 `common.load_history` 等价，直接暴露底层能力。 |
-| `src.analysis.feature_enhancer` | `compute_enhanced_scores(draws, limit, recent_window=40, reference_window=160, decay=0.97, weights=(0.45,0.25,0.30), dirichlet_weight=0.22, pca_components=1, use_pca=True)` | 历史开奖多维特征（动量、共现谱、Dirichlet 后验、图嵌入）融合 | `(List[Tuple[int, float]], FeatureDebugInfo)` | 返回排序列表与调试信息，包含 `graph_embedding_scores`、Dirichlet 均值/方差等字段 |
+| `src.analysis.feature_enhancer` | `compute_enhanced_scores(..., use_pca=True, use_graph_embeddings=True)` | 历史开奖多维特征；可显式禁用外部图嵌入 | `(List[Tuple[int, float]], FeatureDebugInfo)` | 科学回测必须设`use_graph_embeddings=False`，除非缓存有可审计训练截止点。 |
 | `src.analysis.rule_miner` | `build_rule_filter(draws, lottery_code, limit, mode, min_support=None, min_confidence=None, max_itemset_size=None, penalty_weight=None)` | ��ʷ�����顢��Ʊ������ͳ�Ʒ�Χ��ģʽ/����ֵ | `RuleBasedFilter | None` | ����FP-Growth ��Ƶ�� �� -> ��������ƵȨ�أ�֧���̲�ģʽ/����ģʽ |
 | `src.analysis.feature_enhancer` | `compute_recency_and_momentum_scores(draws, limit, recent_window=40, reference_window=160)` | 历史开奖二维数组、窗口设置 | `(np.ndarray, np.ndarray)` | 分别返回近期频率得分与动量得分。 |
 | `src.analysis.feature_enhancer` | `compute_co_occurrence_scores(draws, limit, decay=0.97)` | 历史开奖二维数组、统计范围、衰减因子 | `np.ndarray` | 通过共现矩阵的主特征向量衡量号码中心性。 |
+| `src.scientific.prizes` | `prize_for_hits(play, hits, scenario, issue=...)` | 玩法、命中数、显式情景、期号 | `float` | 按2025350边界切换奖表；浮动奖缺失时失败。 |
+| `src.scientific.prizes` | `exact_two_ticket_metrics(play, ticket_mode, scenario)` | 玩法、出票方式、当前规则情景 | `dict` | 组合数学精确计算两注4元的中奖、盈利、期望和高奖概率。 |
+| `src.scientific.evaluation` | `make_temporal_split(total_issues, ...)` | 期数及切分比例 | `TemporalSplit` | 固定滚动验证与最终holdout边界。 |
+| `src.scientific.evaluation` | `evaluate_indices(issues, draws, indices, parameters, scenario, random_seeds=...)` | 时间升序数据、目标索引与冻结参数 | `DataFrame` | 目标`t`严格只读取`draws[:t]`，每期生成两注。 |
+| `src.scientific.statistics` | `paired_randomisation_test(candidate, baseline, ...)` | 同期开奖配对指标 | `(effect, p_value)` | 单侧配对符号翻转检验；多重比较另用`holm_adjust`。 |
 
 #### PCA主成分特征用法
 ```python

@@ -47,15 +47,13 @@ def download_history(
     _ensure_supported_lottery(code)
 
     if _df_download_history is not None:
-        try:
-            return _df_download_history(
-                code,
-                start=start,
-                end=end,
-                use_sequence_order=use_sequence_order,
-            )
-        except Exception as exc:  # pragma: no cover - fallback 分支
-            logger.warning("download_history 回退内置爬虫，原因：{}", exc)
+        # 新下载器的完整性失败必须向上抛出，不能静默回退到宽松旧爬虫。
+        return _df_download_history(
+            code,
+            start=int(start) if start is not None else None,
+            end=int(end) if end is not None else None,
+            use_sequence_order=use_sequence_order,
+        )
 
     def _coerce_issue(value, default):
         if value is None:
@@ -105,10 +103,7 @@ def get_current_issue(code: str) -> str:
     """
     _ensure_supported_lottery(code)
     if _df_get_current_issue is not None:
-        try:
-            return _df_get_current_issue(code)
-        except Exception as exc:  # pragma: no cover - fallback 分支
-            logger.warning("get_current_issue 回退页面抓取，原因：{}", exc)
+        return _df_get_current_issue(code)
     return _scrape_current_issue(code)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
