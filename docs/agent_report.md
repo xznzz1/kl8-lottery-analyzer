@@ -1,5 +1,18 @@
 # 本次自动执行报告 | Automation Execution Report
 
+## 2026-07-16 快乐8真正前瞻验证
+
+- 分支目标：在不重新划分、调参或覆盖旧final holdout的前提下，冻结截止2026186的全部科学参数，并只处理之后自然到达的开奖。
+- 实现：新增`config/scientific_freeze.json`、`src/scientific/prospective.py`和`scripts/prospective_evaluate.py`；每个新增期生成500条原始记录、120行无机会性排名的描述摘要，并为下一期生成100行合法冻结策略票面。
+- 数据：当前`data_cache/kl8/data.csv`共1631期，新增期2026187的预测历史严格截止2026186；冻结前缀1630期的原CSV SHA-256仍为`fffab75fffd17a9a84f728a3a52c27fc8bc598a5630ffc60a43510dc8a4becb6`。
+- 幂等：同一主键`issue/strategy/seed/play/ticket_mode`重复运行不追加；已有记录会被全量重算逐字段校验，冲突、缺失网格或数据倒退在写入前失败。真实数据重复运行的`prospective_records.csv` SHA-256保持一致。
+- 审计链：运行在任何开奖计算/写入前校验九个冻结源码/配置文件的规范化SHA-256，新增覆盖前瞻评估器、统计汇总与CLI入口；2026188完整100行候选内嵌于`reports/prospective_manifests/2026188.json`，已有期号manifest禁止日常覆盖，候选CSV跨期覆盖前必须先验封。
+- 受控迁移：与Git提交`c1f2887`逐行比较，2026188的100行`strategy/play/ticket_mode/ticket1/ticket2`差异数为0，投影SHA-256保持`5111264f...e900`；候选行仅`freeze_fingerprint`变化，顶层仅freeze/source指纹和候选CSV哈希变化，原生成时间、历史哈希及业务字段均保持不变。新source指纹为`eb7ddfaf...f8e9`，新freeze指纹为`cc854672...00d2`，新候选CSV哈希为`11ed6878...b126`，新manifest原始哈希为`ed26dd0a...df55`。
+- 保护：旧科学报告与本地旧`final_holdout_results.csv`运行前后SHA-256分别保持`5bc8abb7...eebe9`和`210e7a8f...879c`；前瞻CLI不能把输出指向旧报告或`results/scientific/`。
+- 首次结果：2026187是首个冻结后样本外观察，但具体票面未事前公开封存；2026188是首个具有完整预先封存候选集的期号。当前只有1个冻结后观察期，20个seed不是20个独立期开奖，因此不运行显著性检验或排名；不能证明任何策略优于随机，也不能证明等效。
+- 质量：Black、isort、Ruff、flake8、严格mypy、compileall和`pip check`通过；完整测试`137 passed`，当前约定覆盖范围为`85.24%`。
+- 复现：`.venv\Scripts\python.exe scripts\prospective_evaluate.py --next-issue 2026188`，输出位于`results/prospective/`、`reports/kl8_prospective_report.md`和版本化逐期manifest。下一期号不作整数加一推断。完整质量结果在本次Draft PR说明中记录。
+
 ## 2026-07-16 快乐8科学评估审计
 
 - 数据：实时复核500.com全量响应，1,955个原始行中1,630个有效期开奖行、325个空白分隔行，期号2021313—2026186；CSV和HTML未提交。

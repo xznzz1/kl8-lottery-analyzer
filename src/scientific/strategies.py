@@ -37,6 +37,23 @@ class StrategyParameters:
             raise ValueError("hybrid_weights之和必须为1")
 
 
+@dataclass(frozen=True)
+class RepositoryAdvancedParameters:
+    """原仓库高级基线在冻结时使用的显式参数。"""
+
+    recent_window: int = 40
+    reference_window: int = 160
+    decay: float = 0.97
+    feature_weights: tuple[float, float, float] = (0.45, 0.25, 0.30)
+    dirichlet_weight: float = 0.22
+    pca_components: int = 1
+    use_pca: bool = True
+    use_graph_embeddings: bool = False
+
+
+REPOSITORY_ADVANCED_PARAMETERS = RepositoryAdvancedParameters()
+
+
 def validate_draws(draws: np.ndarray) -> np.ndarray:
     """校验并返回 ``(期数, 20)`` 的整数开奖号码矩阵。"""
 
@@ -79,17 +96,21 @@ def score_numbers(
     history = validate_draws(history)
     if strategy == "repository_advanced":
         # feature_enhancer约定最近期在前，且每行第0列为期号占位。
+        advanced = REPOSITORY_ADVANCED_PARAMETERS
         recent_first = history[::-1]
         synthetic_issues = np.arange(len(recent_first), 0, -1, dtype=int)[:, None]
         advanced_input = np.hstack([synthetic_issues, recent_first])
         ranked, _ = compute_enhanced_scores(
             advanced_input,
             limit=len(advanced_input),
-            recent_window=40,
-            reference_window=160,
-            decay=0.97,
-            use_pca=True,
-            use_graph_embeddings=False,
+            recent_window=advanced.recent_window,
+            reference_window=advanced.reference_window,
+            decay=advanced.decay,
+            weights=advanced.feature_weights,
+            dirichlet_weight=advanced.dirichlet_weight,
+            pca_components=advanced.pca_components,
+            use_pca=advanced.use_pca,
+            use_graph_embeddings=advanced.use_graph_embeddings,
         )
         scores = np.zeros(80, dtype=float)
         for number, value in ranked:
@@ -199,6 +220,8 @@ def assert_legal_tickets(
 
 __all__ = [
     "DETERMINISTIC_STRATEGIES",
+    "REPOSITORY_ADVANCED_PARAMETERS",
+    "RepositoryAdvancedParameters",
     "StrategyParameters",
     "assert_legal_tickets",
     "deterministic_tickets",
