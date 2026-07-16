@@ -1,12 +1,12 @@
 # KL8 分析工具 Makefile
 
-.PHONY: setup fmt lint test build run train-graph download-data scientific-backtest prospective-evaluate research-v2-backtest ci clean help
+.PHONY: setup fmt lint test build run train-graph download-data scientific-backtest prospective-evaluate research-v2-backtest research-v2-changepoint-backtest ci clean help
 .DEFAULT_GOAL := help
 
 PROJECT_ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 LOTTERY_ROOT := $(abspath $(PROJECT_ROOT)/..)
 PYTHON := $(PROJECT_ROOT)/.venv/Scripts/python.exe
-QUALITY_PATHS := src/scientific src/research_v2 src/data_fetcher.py src/config.py src/analysis/shared_utils.py src/analysis/kl8_running.py scripts/get_data.py scripts/backtest_baselines.py scripts/prospective_evaluate.py scripts/research_v2_backtest.py scripts/train_graph_embeddings.py tests/test_data_fetcher.py tests/test_scientific_backtest.py tests/test_prospective_evaluate.py tests/test_config.py tests/test_shared_utils.py tests/test_kl8_running.py tests/test_research_v2_bayesian.py tests/test_research_v2_metrics.py tests/test_research_v2_evaluation.py tests/test_research_v2_backtest.py
+QUALITY_PATHS := src/scientific src/research_v2 src/data_fetcher.py src/config.py src/analysis/shared_utils.py src/analysis/kl8_running.py scripts/get_data.py scripts/backtest_baselines.py scripts/prospective_evaluate.py scripts/research_v2_backtest.py scripts/research_v2_changepoint_backtest.py scripts/train_graph_embeddings.py tests/test_data_fetcher.py tests/test_scientific_backtest.py tests/test_prospective_evaluate.py tests/test_config.py tests/test_shared_utils.py tests/test_kl8_running.py tests/test_research_v2_bayesian.py tests/test_research_v2_metrics.py tests/test_research_v2_evaluation.py tests/test_research_v2_backtest.py tests/test_research_v2_changepoint.py tests/test_research_v2_changepoint_evaluation.py tests/test_research_v2_changepoint_backtest.py
 export PYTHONPYCACHEPREFIX := $(PROJECT_ROOT)/data_cache/pycache
 export COVERAGE_FILE := $(PROJECT_ROOT)/data_cache/.coverage
 export XDG_CACHE_HOME := $(LOTTERY_ROOT)/.cache
@@ -35,7 +35,7 @@ lint: ## 静态检查
 	cd "$(PROJECT_ROOT)" && "$(PYTHON)" -m ruff check $(QUALITY_PATHS)
 	cd "$(PROJECT_ROOT)" && "$(PYTHON)" -m flake8 $(QUALITY_PATHS)
 	cd "$(PROJECT_ROOT)" && "$(PYTHON)" -m mypy --strict src/scientific src/data_fetcher.py src/config.py scripts/backtest_baselines.py scripts/prospective_evaluate.py --ignore-missing-imports --follow-imports=skip --disable-error-code=type-arg --disable-error-code=no-any-return
-	cd "$(PROJECT_ROOT)" && "$(PYTHON)" -m mypy --strict src/research_v2 scripts/research_v2_backtest.py --ignore-missing-imports
+	cd "$(PROJECT_ROOT)" && "$(PYTHON)" -m mypy --strict src/research_v2 scripts/research_v2_backtest.py scripts/research_v2_changepoint_backtest.py --ignore-missing-imports
 
 test: ## 运行测试与覆盖率
 	@echo "运行 pytest..."
@@ -65,6 +65,9 @@ prospective-evaluate: ## 冻结参数后只评估2026186之后真实到达的数
 research-v2-backtest: ## 运行v2探索性嵌套时间回测并生成报告
 	cd "$(PROJECT_ROOT)" && "$(PYTHON)" scripts/research_v2_backtest.py
 
+research-v2-changepoint-backtest: ## 运行v2第二阶段在线变点探索性回测
+	cd "$(PROJECT_ROOT)" && "$(PYTHON)" scripts/research_v2_changepoint_backtest.py
+
 ci: fmt lint test build ## 本地 CI
 	@echo "本地 CI 全部通过"
 
@@ -81,6 +84,7 @@ help: ## 查看可用命令
 	@echo "  make scientific-backtest - 生成严格时间滚动评估与报告"
 	@echo "  make prospective-evaluate - 运行冻结策略前瞻监测"
 	@echo "  make research-v2-backtest - 运行v2探索性嵌套时间回测"
+	@echo "  make research-v2-changepoint-backtest - 运行v2第二阶段在线变点回测"
 	@echo "  make fmt            - 格式化代码"
 	@echo "  make lint           - 静态检查"
 	@echo "  make test           - 运行测试"
