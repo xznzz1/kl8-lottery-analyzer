@@ -32,3 +32,11 @@
    本次Windows审计的实际项目根为`D:\lottery\kl8-lottery-analyzer`，自动执行不得在C盘创建仓库副本、虚拟环境、缓存或结果。代码实现的可移植约束是：输出只允许落入当前仓库的`data_cache/`、`results/`、`reports/`，临时与工具缓存使用仓库父目录的`.tmp/`、`.cache/`。Makefile按自身位置解析仓库和`.venv`，不宣称把任意检出强制到D盘。
 16. **覆盖率边界**
    覆盖率门槛针对当前轻量下载、配置、可复用分析组件和科学评估路径；旧深度训练/预测入口`common_legacy.py`、`modeling.py`、`pipeline.py`及`analysis/kl8_*`、`shared_cash.py`明确排除。这些模块不在默认下载、统计或科学回测调用链中，恢复维护前必须另补测试。
+17. **永久冻结与前瞻起点**
+   原科学报告、截止2026186的1630期数据快照及326期final holdout已经查看并永久冻结。前瞻模式只接受期号大于2026186的开奖记录，不调用时间切分或验证调参，也不读取或写入`results/scientific/`。
+18. **完整冻结参数**
+   顶层参数固定为窗口120、衰减0.99、hybrid权重(0.25, 0.50, 0.25)及20个seed。`repository_advanced`另有窗口40/160、衰减0.97、特征权重、Dirichlet、PCA及科学计算库版本，均在`config/scientific_freeze.json`显式记录并由运行时校验；NumPy、Pandas与scikit-learn在`requirements.txt`精确锁定。这只是把既有实现冻结，不是重新调参。
+19. **单期证据限制**
+   当前只有2026187一个新增时间簇。20个随机seed是同期开奖条件下的Monte Carlo重复，不能当成20个独立期开奖；因此前瞻摘要不运行p值、多重检验或排名，单期区间字段留空，不能声称优于随机或与随机等效。
+20. **候选票面的语义**
+   `next_issue_candidates.csv`只包含五个冻结确定性策略。`independent`表示两注分别优化且允许重叠，并非统计独立；在确定性排序下两注通常相同。候选是可复现代码输出，不是投注建议、预测概率或策略有效性证据。

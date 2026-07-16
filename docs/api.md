@@ -19,6 +19,9 @@
 | `src.scientific.evaluation` | `make_temporal_split(total_issues, ...)` | 期数及切分比例 | `TemporalSplit` | 固定滚动验证与最终holdout边界。 |
 | `src.scientific.evaluation` | `evaluate_indices(issues, draws, indices, parameters, scenario, random_seeds=...)` | 时间升序数据、目标索引与冻结参数 | `DataFrame` | 目标`t`严格只读取`draws[:t]`，每期生成两注。 |
 | `src.scientific.statistics` | `paired_randomisation_test(candidate, baseline, ...)` | 同期开奖配对指标 | `(effect, p_value)` | 单侧配对符号翻转检验；多重比较另用`holm_adjust`。 |
+| `src.scientific.prospective` | `load_scientific_freeze(path)` | 版本化JSON路径 | `ScientificFreeze` | 校验截止期、顶层/高级策略参数、seed、奖金情景和快照元信息，任何漂移明确失败。 |
+| `src.scientific.prospective` | `run_prospective_evaluation(paths, bootstrap_samples=1000, next_issue=None)` | 固定边界路径、描述区间次数、可选下一期官方期号 | `ProspectiveRunResult` | 只评估2026186之后数据，幂等核对已有记录并生成摘要、候选和报告；不执行切分或调参。 |
+| `src.scientific.prospective` | `resolve_prospective_paths(project_root, ...)` | 项目根及固定相对路径 | `ProspectivePaths` | 只接受`data_cache/kl8/data.csv`、`results/prospective`和专用报告路径，拒绝覆盖旧科学产物。 |
 
 #### PCA主成分特征用法
 ```python

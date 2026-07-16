@@ -1,5 +1,15 @@
 # 设计决策记录（Decision Record）
 
+## 2026-07-16 冻结策略前瞻监测
+
+- 将原科学评估永久冻结在期号2026186；旧科学报告、旧`final_holdout_results.csv`和参数文件不再重算或覆盖。`config/scientific_freeze.json`记录原1630期CSV快照、产物哈希、窗口120、衰减0.99、hybrid权重、20个seed及奖金情景。
+- `repository_advanced`原先还有独立的窗口40/160、衰减0.97、特征权重、Dirichlet、PCA和图缓存开关。为避免后续静默漂移，在不改变算法输出的前提下将这些隐含常量显式化，并将科学计算库版本纳入冻结配置的运行时校验与依赖锁定。
+- `scripts/prospective_evaluate.py`不导入或调用时间切分、验证调参或旧回测入口。对每个目标索引`t`，只把截至`t`的截断数组交给评估器，策略仍只能读取`t`之前的历史；2026187的策略输入严格截止2026186。
+- 每个新增期固定生成500条原始记录：五个确定性策略共100条，20-seed均匀随机基线共400条。幂等主键为`issue/strategy/seed/play/ticket_mode`；每次重算全部已见前瞻期并逐字段核对，冲突或数据倒退在任何写入前失败，只追加完整新期网格。
+- 前瞻摘要只保留100个确定性配置和20个随机seed ensemble配置。20个seed不是独立开奖；当前仅有一个新增期，因此不运行显著性检验、多重校正或排名，也不展示退化的单期置信区间。现阶段既不能证明策略优于随机，也不能证明等效。
+- 下一期候选覆盖五个冻结确定性策略、选一至选十及`disjoint`/`independent`，共100行。`independent`仅表示允许重叠，不表示统计独立；票面被标记为冻结策略输出而非预测或投注建议。
+- CLI路径锁定为仓库内`data_cache/kl8/data.csv`、`results/prospective/`与`reports/kl8_prospective_report.md`，并显式保护旧科学报告和`results/scientific/`。真实Windows运行还校验仓库根与`.venv`位于指定D盘位置，原子临时文件只写`D:\lottery\.tmp`。
+
 ## 2026-07-16 严格时间滚动科学评估
 
 - 以行索引表示时间，CSV先按期号升序；预测第`t`期只允许访问`draws[:t]`，不再用期号数值差计算偏移。

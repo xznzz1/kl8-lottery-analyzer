@@ -9,6 +9,7 @@
 - 📦 `src/common.py`：封装数据下载、期号查询与历史数据加载。
 - 🌐 `src/data_fetcher.py`：带域名白名单、超时与重试机制的抓取器。
 - 🔬 `scripts/backtest_baselines.py`：固定每期4元，比较选一至选十、两种出票方式和多种无泄漏策略。
+- 🧊 `scripts/prospective_evaluate.py`：读取版本化冻结配置，只评估2026186之后真实到达的开奖，并幂等生成下一期冻结策略票面。
 - 🎯 `src/analysis/feature_enhancer.py`：整合近期动量、共现谱、Dirichlet 平滑、PCA 与图嵌入的综合特征评分。
 - 🧮 `src/analysis/rule_miner.py`：基于 FP-Growth 的频繁项集与关联规则筛选，支持软/硬模式。
 - 🎲 `src/analysis/copula_sampler.py`：高斯 Copula 多样性采样，结合互信息惩罚提升组合相关性建模。
@@ -20,12 +21,14 @@
 conda activate python311
 make setup
 make download-data             # 可重复执行，获取最新历史数据
-make scientific-backtest       # 生成CSV与科学报告（显式封顶情景）
+make prospective-evaluate      # 冻结参数前瞻监测；不重跑旧holdout
 ```
 
-完整数据缓存和 `results/` 默认不提交。回测产物包括 `results/scientific/*.csv` 与
-`reports/kl8_scientific_report.md`。浮动奖封顶情景只用于敏感性演示，不是逐期实际
-兑付；规则版本和替代输入见 [官方规则说明](docs/official_rules.md)。
+原科学报告和326期final holdout已经查看并永久冻结，不得用当前数据重新划分、调参
+或覆盖。冻结契约见 `config/scientific_freeze.json`。前瞻输出为
+`results/prospective/*.csv` 与 `reports/kl8_prospective_report.md`；完整数据缓存和
+`results/` 默认不提交。浮动奖封顶情景不是逐期实际兑付；规则版本和替代输入见
+[官方规则说明](docs/official_rules.md)。
 
 PyTorch不是下载、统计和科学回测依赖。图嵌入训练仅是可选旧功能；科学holdout默认
 禁用无法证明训练截止点的全样本图嵌入缓存。
@@ -89,11 +92,11 @@ python src/analysis/kl8_analysis.py \
 ## 目录结构
 ```
 .
-├── config/                # 配置文件（config.yaml）
+├── config/                # 运行配置与科学冻结契约
 ├── data_cache/kl8/        # 下载数据与元信息（默认忽略）
 ├── docs/                  # 架构 / API / 运维文档
 ├── examples/              # 高频号码统计示例
-├── scripts/               # 数据下载与图嵌入训练脚本
+├── scripts/               # 下载、前瞻评估与可选图嵌入训练脚本
 ├── src/
 │   ├── analysis/          # 核心分析脚本与工具
 │   ├── scientific/        # 无泄漏策略、奖金、统计检验与滚动评估
@@ -121,7 +124,12 @@ python src/analysis/kl8_analysis.py \
    - Copula 采样需确保 `limit_line` 不小于 `analysis.copula.min_draws`（默认 180），不足时会自动退回传统策略。
 6. **旧高级脚本能直接当科学回测吗？**
    不能。审计发现部分旧流程存在倒序索引、全样本预处理或缓存截止点不明的问题。
-   请使用 `scripts/backtest_baselines.py`；它按期号升序并保证预测第t期只读取t之前数据。
+   原科学设计使用 `scripts/backtest_baselines.py`，但其final holdout现已冻结；新增开奖必须
+   使用 `scripts/prospective_evaluate.py`，它按期号升序并保证预测第t期只读取t之前数据。
+7. **为什么不能重新运行旧final holdout来选择参数？**
+   该326期结果已经查看，不再是未接触样本。新增开奖只能通过
+   `make prospective-evaluate` 按 `config/scientific_freeze.json` 累积；当前仅有
+   2026187一个新增期，不能得出统计显著性结论。
 
 ## `kl8_running.py` 资源提示
 批量运行会按参数列表笛卡尔展开生成大量任务（每个期号 × cal_nums × total_create），容易造成内存和文件句柄压力。请从小规模参数起步，确认后再逐步放大，同时监控 `max_workers`、内存及磁盘空间。

@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "freeze_status": "viewed_and_permanently_frozen",
+  "frozen_through_issue": 2026186,
+  "rolling_window": 120,
+  "decay": 0.99,
+  "hybrid_weights": [
+    0.25,
+    0.5,
+    0.25
+  ],
+  "random_seeds": [
+    202601,
+    202602,
+    202603,
+    202604,
+    202605,
+    202606,
+    202607,
+    202608,
+    202609,
+    202610,
+    202611,
+    202612,
+    202613,
+    202614,
+    202615,
+    202616,
+    202617,
+    202618,
+    202619,
+    202620
+  ],
+  "prize_scenario": {
+    "mode": "cap_scenario",
+    "label": "explicit_rule_cap_scenario_not_actual_payout",
+    "note": "仅为规则封顶情景，不代表逐期实际兑付奖金。"
+  },
+  "repository_advanced": {
+    "implementation_baseline_commit": "25ee7c410c3d2916b81f32dfac7afa6b6b44202f",
+    "recent_window": 40,
+    "reference_window": 160,
+    "decay": 0.97,
+    "feature_weights": [
+      0.45,
+      0.25,
+      0.3
+    ],
+    "dirichlet_weight": 0.22,
+    "pca_components": 1,
+    "use_pca": true,
+    "use_graph_embeddings": false,
+    "dirichlet_config": {
+      "prior_strength": 0.6,
+      "window_size": 120,
+      "variance_weight": 0.35
+    },
+    "environment_observed": {
+      "python": "3.11",
+      "numpy": "1.26.4",
+      "pandas": "3.0.3",
+      "scikit_learn": "1.9.0"
+    }
+  },
+  "original_data_snapshot": {
+    "path": "data_cache/kl8/data.csv",
+    "earliest_issue": 2021313,
+    "latest_issue": 2026186,
+    "record_count": 1630,
+    "csv_sha256": "fffab75fffd17a9a84f728a3a52c27fc8bc598a5630ffc60a43510dc8a4becb6",
+    "canonical_records_sha256": "8bad7881cf0f58f27c26c4d7baa26d158748413861c0761c2a988217cd433de0",
+    "note": "该哈希属于截止2026186的原始1630期快照；当前data.csv可包含之后的新期开奖。"
+  },
+  "frozen_artifacts": {
+    "scientific_report": {
+      "path": "reports/kl8_scientific_report.md",
+      "sha256_raw_windows_checkout": "5bc8abb75b490f246c2541f2f10cdc8c23def2992094bc829c562126915eebe9",
+      "sha256_utf8_normalized_lf": "d844d5b887fa7cd9c7faade25578e7b1d605b552710d24e4231b8c2783df9e3c"
+    },
+    "final_holdout_results": {
+      "path": "results/scientific/final_holdout_results.csv",
+      "committed": false,
+      "sha256_raw_windows_checkout": "210e7a8f2510f5ec9e7673015a8c4e42033c6cc9b7a534e3d632b610397a879c",
+      "sha256_utf8_normalized_lf": "f54bb9f2de3cd13686e234d0e3a2790c0686154151a169605b535c02d5484cc7",
+      "note": "结果目录默认忽略；若本地存在则必须保持原字节不变，前瞻脚本从不读取或写入该文件。"
+    },
+    "selected_parameters": {
+      "path": "results/scientific/selected_parameters.json",
+      "committed": false,
+      "sha256_utf8_normalized_lf": "1b0d329e4b3efa9aa94caf624ec598b3fc4fc26183aec760bfa8775294d32005"
+    }
+  },
+  "prospective_policy": {
+    "first_target_issue": 2026187,
+    "never_call": [
+      "make_temporal_split",
+      "tune_on_validation",
+      "final_holdout_evaluation"
+    ],
+    "claim_boundary": "仅称为冻结策略输出；新预测主张必须使用2026186之后真实到达的数据。"
+  }
+}

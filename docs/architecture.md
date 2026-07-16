@@ -9,6 +9,7 @@ flowchart LR
         D[🚀 kl8_analysis_plus.py]
         E[🚀 kl8_cash_plus.py]
         F[scripts/backtest_baselines.py]
+        G[scripts/prospective_evaluate.py]
     end
 
     A --> COM[common.get_data_run]
@@ -17,6 +18,7 @@ flowchart LR
     D --> COM
     E --> COM
     F --> SCI[scientific evaluation]
+    G --> PRO[prospective monitor]
 
     subgraph "优化并发架构"
         COM --> DOWNLOAD[单线程数据下载]
@@ -37,6 +39,9 @@ flowchart LR
     SCI --> DF
     SCI --> PRIZE[版本化奖金与精确概率]
     SCI --> STATS[bootstrap / 配对随机化 / Holm]
+    PRO --> FREEZE[scientific_freeze.json]
+    PRO --> SCI
+    PRO --> PROOUT[(results/prospective + prospective report)]
 
     CFG --> PATHS[(PATHS & 网络配置)]
 ```
@@ -49,6 +54,7 @@ flowchart LR
 - **`src.data_fetcher`**：负责 HTTP 请求、HTML/文本解析以及 CSV 写入，仅支持快乐 8。
 - **`src.config`**：集中维护路径、网络超时及彩票配置；`ensure_runtime_directories` 用于初始化运行目录。
 - **`src.scientific`**：独立于PyTorch的无泄漏路径，包含票面生成、版本化奖金、滚动切分、区间估计、配对检验和风险汇总。
+- **`src.scientific.prospective`**：读取永久冻结契约，只处理截止期后的自然新增开奖；负责旧快照校验、逐目标截断、幂等冲突检测、描述摘要和下一期票面。
 
 ### 科学评估数据流
 
@@ -57,6 +63,14 @@ flowchart LR
 3. 对目标期`t`，所有策略只能读取`draws[:t]`；两种出票方式各生成恰好两注。
 4. 同期开奖与20个seed随机基线配对，输出bootstrap区间、随机化检验和Holm校正。
 5. 玩法排名使用精确组合概率；经验回测输出风险路径。浮动奖必须标注逐期输入或显式情景。
+
+### 冻结后的前瞻数据流
+
+1. 校验`config/scientific_freeze.json`、截止2026186的数据前缀及旧科学产物哈希，不读取或改写旧final holdout结果。
+2. 只选取期号大于2026186的目标；每次调用评估器前把数组截断到目标期，策略输入仍为目标期之前的历史。
+3. 每期生成500条完整记录并与已有CSV逐主键、逐字段重算核对；只追加全新的完整期，冲突时不写任何输出。
+4. 生成120行描述摘要，不把同期开奖上的20个seed当独立时间样本；单期不作显著性检验、排名或区间推断。
+5. 用最新已到达历史生成下一期100行冻结策略票面，并明确标记为非预测、非投注建议。
 
 ### 🚀 多线程优化模块（Plus版本）
 - **`kl8_analysis_plus.py`**：优化多线程号码生成器
