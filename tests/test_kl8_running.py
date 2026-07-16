@@ -5,10 +5,10 @@ kl8_running.py 的单元测试
 测试ThreadPoolExecutor升级后的并发运行功能
 """
 
-import unittest
-from unittest.mock import patch, MagicMock
 import sys
+import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 # 添加项目根目录到sys.path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +55,7 @@ class TestKl8Running(unittest.TestCase):
         # 验证subprocess.run被正确调用
         mock_subprocess.assert_called_once()
         args = mock_subprocess.call_args[0][0]  # 获取第一个位置参数（命令列表）
+        kwargs = mock_subprocess.call_args.kwargs
 
         # 验证关键参数
         self.assertIn("test_process.py", args)
@@ -66,6 +67,13 @@ class TestKl8Running(unittest.TestCase):
         self.assertIn("2023140", args)
         self.assertIn("--download", args)
         self.assertIn("0", args)  # download应该设为0
+        self.assertEqual(args[0], sys.executable)
+        self.assertEqual(kwargs["cwd"], str(PROJECT_ROOT))
+        self.assertEqual(kwargs["env"]["TMP"], str(PROJECT_ROOT.parent / ".tmp"))
+        self.assertEqual(
+            kwargs["env"]["MPLCONFIGDIR"],
+            str(PROJECT_ROOT.parent / ".cache" / "matplotlib"),
+        )
 
     @patch("src.analysis.kl8_running.ensure_data_available")
     @patch("src.analysis.kl8_running.subprocess.run")

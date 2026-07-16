@@ -1,8 +1,15 @@
 [run]
+source = src
 omit =
-    src/analysis/*
+    src/common_legacy.py
     src/modeling.py
     src/pipeline.py
+    src/analysis/kl8_*.py
+    src/analysis/shared_cash.py
 
 [report]
-show_missing = True
+fail_under = 80
+show_missing = true
+
+[xml]
+output = results/coverage.xml

@@ -2,8 +2,9 @@
 
 ## 环境要求
 - 建议在名为 `python311` 的 Conda 环境中运行，保持依赖一致。
+- 本机自动执行固定使用 `D:\lottery\kl8-lottery-analyzer\.venv`；不得在C盘创建虚拟环境、数据、结果或缓存。
 - 网络需可访问 `https://datachart.500.com` 与 `https://data.917500.cn`。
-- `make setup` 会自动创建 `data/kl8`、`results`、`logs` 等目录。
+- `make setup` 会先创建 `D:\lottery\.tmp`、`D:\lottery\.cache`，再安装依赖并创建 `data_cache/kl8`、`results/logs`、`reports`；Makefile按自身位置解析项目根，不受调用时当前目录影响。
 - 建议在批量任务前执行：
   ```bash
   make download-data
@@ -44,21 +45,21 @@ python src/analysis/kl8_running.py --max_workers 1 --cal_nums_list "5" --total_c
 ## 常驻任务建议
 ```bash
 # 每日 05:00 下载数据
-0 5 * * * cd /path/to/kl8-lottery-analyzer && make download-data
+0 5 * * * cd /d/lottery/kl8-lottery-analyzer && make download-data
 
 # 每日 06:00 执行全算法分析（示例参数）
-0 6 * * * cd /path/to/kl8-lottery-analyzer && \
+0 6 * * * cd /d/lottery/kl8-lottery-analyzer && \
 python src/analysis/kl8_analysis.py \
   --cal_nums 20 --total_create 240 --limit_line 240 \
   --advanced_mode 2 --feature_mode hybrid \
   --rule_filter soft --rule_support 0.08 --rule_confidence 0.7 \
   --copula_mode force --copula_samples 64 --copula_shrinkage 0.1 \
-  >> logs/daily_analysis.log 2>&1
+  >> results/logs/daily_analysis.log 2>&1
 
 # 每周日 00:00 批量收益分析
-0 0 * * 0 cd /path/to/kl8-lottery-analyzer && \
+0 0 * * 0 cd /d/lottery/kl8-lottery-analyzer && \
 python src/analysis/kl8_cash_plus.py --path weekly_results --max_workers 6 \
-  >> logs/weekly_cash.log 2>&1
+  >> results/logs/weekly_cash.log 2>&1
 ```
 
 ## 告警建议

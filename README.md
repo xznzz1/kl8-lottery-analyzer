@@ -2,7 +2,7 @@
 
 本仓库提供快乐8历史数据下载、统计分析和严格时间滚动评估。科学评估的目标是检验策略能否在样本外优于随机选号，不宣称能够预测随机开奖；深度训练流程保持可选。
 
-> **环境建议**：请始终在名为 `python311` 的 Conda 环境或等效的 Python 3.11 虚拟环境中执行命令，以保持依赖一致。
+> **环境要求**：本机固定使用 `D:\lottery\kl8-lottery-analyzer\.venv`（Python 3.11）；数据、结果、报告和缓存分别只写入仓库内的 `data_cache/`、`results/`、`reports/`，临时文件写入 `D:\lottery\.tmp`。
 
 ## 功能清单
 - 🔄 `scripts/get_data.py`：下载快乐 8 历史数据，支持顺序出球模式。
@@ -23,7 +23,7 @@ make download-data             # 可重复执行，获取最新历史数据
 make scientific-backtest       # 生成CSV与科学报告（显式封顶情景）
 ```
 
-完整数据和 `results/` 默认不提交。回测产物包括 `results/scientific/*.csv` 与
+完整数据缓存和 `results/` 默认不提交。回测产物包括 `results/scientific/*.csv` 与
 `reports/kl8_scientific_report.md`。浮动奖封顶情景只用于敏感性演示，不是逐期实际
 兑付；规则版本和替代输入见 [官方规则说明](docs/official_rules.md)。
 
@@ -90,7 +90,7 @@ python src/analysis/kl8_analysis.py \
 ```
 .
 ├── config/                # 配置文件（config.yaml）
-├── data/kl8/              # 随仓库提供的最小示例数据
+├── data_cache/kl8/        # 下载数据与元信息（默认忽略）
 ├── docs/                  # 架构 / API / 运维文档
 ├── examples/              # 高频号码统计示例
 ├── scripts/               # 数据下载与图嵌入训练脚本
@@ -101,6 +101,8 @@ python src/analysis/kl8_analysis.py \
 │   ├── config.py          # 快乐 8 配置入口
 │   └── data_fetcher.py    # 历史数据抓取
 ├── tests/                 # Pytest 测试套件
+├── results/               # 回测CSV、日志与覆盖率产物（默认忽略）
+├── reports/               # 可审阅科学报告
 └── Makefile               # 一键任务入口
 ```
 

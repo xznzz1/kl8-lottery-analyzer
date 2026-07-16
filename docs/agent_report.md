@@ -7,7 +7,10 @@
 - 防泄漏：最终326期为未接触holdout；261期滚动验证选择预注册参数。禁用全样本图嵌入和不可审计缓存。
 - 奖金：按2025350切换规则版本，浮动奖采用显式情景；报告明确区分名义/情景奖金与实际兑付。
 - 结果：100个主检验组合中，没有任何策略在Holm校正后显著优于随机基线。
-- 复现：`python scripts/get_data.py --name kl8`，随后`python scripts/backtest_baselines.py --data data/kl8/data.csv --floating-prize-mode cap-scenario`。
+- 复现：`.venv\Scripts\python.exe scripts/get_data.py --name kl8`，随后`.venv\Scripts\python.exe scripts/backtest_baselines.py --data data_cache/kl8/data.csv --floating-prize-mode cap-scenario`。
+- 存储：唯一根目录为`D:\lottery\kl8-lottery-analyzer`；数据、结果、报告限定在`data_cache/`、`results/`、`reports/`，临时文件使用`D:\lottery\.tmp`。
+- 审计：复核`scientific-model`近期提交及`src/data_fetcher.py`、`src/common.py`、`src/common_legacy.py`、`scripts/backtest_baselines.py`；未从旧提交拣选会退化严格解析或统计设计的实现。
+- 质量：完整测试`106 passed`；当前轻量下载、配置、可复用分析组件与科学评估路径覆盖率`84.60%`。核心路径启用Ruff、Black、flake8与严格mypy；旧深度训练/预测入口不计入该覆盖率，排除清单在`.coveragerc`和`ASSUMPTIONS.md`显式记录。当前系统未安装`make`，已逐项执行`fmt`、`lint`、`test`、`build`等价命令。
 
 ## 2025-10-14 Copula 采样与图嵌入扩展
 - 在高级候选生成中引入 Copula 多样性采样与互信息惩罚（`src/analysis/copula_sampler.py`、`src/analysis/mutual_information.py`），提升号码相关性建模。

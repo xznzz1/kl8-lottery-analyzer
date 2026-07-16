@@ -3,7 +3,7 @@
 快乐 8 历史数据高频号码统计示例。
 
 步骤：
-1. 读取仓库提供的 `data/kl8/data.csv`；
+1. 读取仓库缓存的 `data_cache/kl8/data.csv`；
 2. 统计号码出现频次；
 3. 输出前 10 个高频号码。
 """
@@ -44,7 +44,7 @@ def main() -> None:
     try:
         top_numbers = analysis_example()
     except FileNotFoundError as exc:
-        data_hint = (PROJECT_ROOT / "data" / "kl8" / "data.csv").resolve()
+        data_hint = (PROJECT_ROOT / "data_cache" / "kl8" / "data.csv").resolve()
         print(f"数据不存在：{exc}。请先执行 `make download-data` 或准备 {data_hint}")
         return
 

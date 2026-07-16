@@ -5,14 +5,17 @@
 覆盖路径计算、异步写入、奇偶检查、连号查找等工具函数
 """
 
-import pytest
-import tempfile
 import os
+import tempfile
+from pathlib import Path
 
+import pytest
+
+from src.analysis import shared_utils
 from src.analysis.shared_utils import (
+    check_odd_even,
     compute_output_dir,
     ensure_dir,
-    check_odd_even,
     find_consecutive_number,
     write_results_async,
     write_results_core,
@@ -48,8 +51,14 @@ class TestComputeOutputDir:
         result1 = compute_output_dir(0, "")
         result2 = compute_output_dir(1, "")
 
-        assert result1 == "./results/"
-        assert result2 == "./random/"
+        project_root = Path(__file__).resolve().parents[1]
+        assert Path(result1).resolve() == project_root / "results" / "legacy"
+        assert Path(result2).resolve() == project_root / "results" / "random"
+
+    @pytest.mark.parametrize("label", ["../outside", r"..\outside", "D:outside"])
+    def test_compute_output_dir_rejects_path_traversal(self, label):
+        with pytest.raises(ValueError, match="输出标签"):
+            compute_output_dir(0, label)
 
 
 class TestEnsureDir:
@@ -141,85 +150,119 @@ class TestFindConsecutiveNumber:
 class TestWriteResults:
     """测试结果写入功能"""
 
-    def test_write_results_core_basic(self):
+    def test_write_results_core_basic(self, monkeypatch, tmp_path):
         """测试核心写入功能"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_dir = tmpdir + "/"
-            test_rows = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        monkeypatch.setattr(shared_utils, "RESULTS_ROOT", tmp_path)
+        file_dir = f"{tmp_path.as_posix()}/"
+        test_rows = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
 
-            write_results_core(
-                rows=test_rows,
-                file_dir=file_dir,
-                file_prefix="test",
-                cal_nums=3,
-                total_create=10,
-                multiple=1,
-                multiple_ratio="1,0",
-                period_num="123",
-                current_time_str="20231012",
-            )
+        write_results_core(
+            rows=test_rows,
+            file_dir=file_dir,
+            file_prefix="test",
+            cal_nums=3,
+            total_create=10,
+            multiple=1,
+            multiple_ratio="1,0",
+            period_num="123",
+            current_time_str="20231012",
+        )
 
-            # 验证文件被创建
-            files = os.listdir(tmpdir)
-            assert len(files) > 0
+        # 验证文件被创建
+        files = os.listdir(tmp_path)
+        assert len(files) > 0
 
-            # 验证文件内容
-            csv_file = [f for f in files if f.endswith(".csv")][0]
-            with open(os.path.join(tmpdir, csv_file), "r") as f:
-                content = f.read()
-                assert "b1,b2,b3" in content  # 验证表头
-                assert "1,2,3" in content  # 验证数据
+        # 验证文件内容
+        csv_file = [f for f in files if f.endswith(".csv")][0]
+        with open(tmp_path / csv_file, "r") as f:
+            content = f.read()
+            assert "b1,b2,b3" in content  # 验证表头
+            assert "1,2,3" in content  # 验证数据
 
-    def test_write_results_async_thread(self):
+    def test_write_results_async_thread(self, monkeypatch, tmp_path):
         """测试异步写入功能（线程模式）"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_dir = tmpdir + "/"
-            test_rows = [[1, 2], [3, 4]]
+        monkeypatch.setattr(shared_utils, "RESULTS_ROOT", tmp_path)
+        file_dir = f"{tmp_path.as_posix()}/"
+        test_rows = [[1, 2], [3, 4]]
 
-            write_results_async(
-                rows=test_rows,
-                file_dir=file_dir,
-                file_prefix="async_test",
-                cal_nums=2,
-                total_create=5,
-                multiple=1,
-                multiple_ratio="1,0",
-                period_num="456",
-                current_time_str="20231012",
-                backend="thread",
-            )
+        write_results_async(
+            rows=test_rows,
+            file_dir=file_dir,
+            file_prefix="async_test",
+            cal_nums=2,
+            total_create=5,
+            multiple=1,
+            multiple_ratio="1,0",
+            period_num="456",
+            current_time_str="20231012",
+            backend="thread",
+        )
 
-            # 等待异步操作完成
-            import time
+        # 等待异步操作完成
+        import time
 
-            time.sleep(0.1)
+        time.sleep(0.1)
 
-            # 验证文件被创建
-            files = os.listdir(tmpdir)
-            assert len(files) > 0
+        # 验证文件被创建
+        files = os.listdir(tmp_path)
+        assert len(files) > 0
 
-    def test_write_results_creates_directory(self):
+    def test_write_results_creates_directory(self, monkeypatch, tmp_path):
         """测试写入时自动创建目录"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            nested_dir = os.path.join(tmpdir, "subdir") + "/"
-            test_rows = [[1, 2]]
+        monkeypatch.setattr(shared_utils, "RESULTS_ROOT", tmp_path)
+        nested_dir = tmp_path / "subdir"
+        test_rows = [[1, 2]]
 
-            # 父目录不存在时应自动创建
+        # 父目录不存在时应自动创建
+        write_results_core(
+            rows=test_rows,
+            file_dir=nested_dir,
+            file_prefix="test",
+            cal_nums=2,
+            total_create=1,
+            multiple=1,
+            multiple_ratio="1,0",
+            period_num="789",
+            current_time_str="20231012",
+        )
+
+        assert nested_dir.exists()
+        files = os.listdir(nested_dir)
+        assert len(files) > 0
+
+    def test_write_results_rejects_outside_results(self, monkeypatch, tmp_path):
+        results_root = tmp_path / "results"
+        monkeypatch.setattr(shared_utils, "RESULTS_ROOT", results_root)
+        with pytest.raises(ValueError, match="结果目录必须位于results内"):
             write_results_core(
-                rows=test_rows,
-                file_dir=nested_dir,
-                file_prefix="test",
-                cal_nums=2,
+                rows=[[1]],
+                file_dir=tmp_path / "outside",
+                file_prefix="blocked",
+                cal_nums=1,
                 total_create=1,
                 multiple=1,
                 multiple_ratio="1,0",
-                period_num="789",
-                current_time_str="20231012",
+                period_num="0",
+                current_time_str="20260716",
             )
+        assert not (tmp_path / "outside").exists()
 
-            assert os.path.exists(nested_dir)
-            files = os.listdir(nested_dir)
-            assert len(files) > 0
+    def test_write_results_rejects_prefix_path_traversal(self, monkeypatch, tmp_path):
+        results_root = tmp_path / "results"
+        monkeypatch.setattr(shared_utils, "RESULTS_ROOT", results_root)
+        with pytest.raises(ValueError, match="结果文件前缀"):
+            write_results_core(
+                rows=[[1]],
+                file_dir=results_root / "legacy",
+                file_prefix="../../escaped",
+                cal_nums=1,
+                total_create=1,
+                multiple=1,
+                multiple_ratio="1,0",
+                period_num="0",
+                current_time_str="20260716",
+            )
+        assert not list(tmp_path.glob("escaped*.csv"))
 
 
 if __name__ == "__main__":

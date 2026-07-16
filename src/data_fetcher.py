@@ -5,7 +5,7 @@
 相较于原仓库，该版本仅保留快乐 8（kl8）相关逻辑，负责：
 1. 带重试的 HTTP 抓取；
 2. HTML / 文本解析为 pandas.DataFrame；
-3. 将数据保存到 `data/kl8/data.csv` 并生成下载元信息。
+3. 将数据保存到 `data_cache/kl8/data.csv` 并生成下载元信息。
 """
 
 from __future__ import annotations

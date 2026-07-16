@@ -4,7 +4,7 @@
 
 | 模块 | 函数 | 参数 | 返回值 | 说明 |
 |------|------|------|--------|------|
-| `src.common` | `get_data_run(name, sequence_mode=False, start_issue=None, end_issue=None)` | 彩票代号；是否抓取顺序数据；期号区间 | `DownloadResult` | 下载快乐 8 历史数据并写入 `data/kl8/data.csv`。 |
+| `src.common` | `get_data_run(name, sequence_mode=False, start_issue=None, end_issue=None)` | 彩票代号；是否抓取顺序数据；期号区间 | `DownloadResult` | 下载快乐 8 历史数据并写入 `data_cache/kl8/data.csv`。 |
 | `src.common` | `get_current_number(name)` | 彩票代号 | `str` | 读取快乐 8 最新期号。 |
 | `src.common` | `load_history(name)` | 彩票代号 | `pandas.DataFrame` | 从本地 CSV 加载历史开奖数据。 |
 | `src.data_fetcher` | `download_history(code, start=None, end=None, use_sequence_order=False, client=None)` | 彩票代号、期号区间、顺序模式、HTTP 客户端 | `DownloadResult` | 带重试和白名单校验的抓取实现。 |

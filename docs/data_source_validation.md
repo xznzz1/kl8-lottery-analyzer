@@ -35,5 +35,5 @@
 抓取器只接纳上述 81-cell 契约，并对原始、有效和拒绝行分别计数。CSV 保存前会检查
 新数据最新期号不得早于现有文件；保存后在 `download_meta.json` 记录来源 URL、UTC
 抓取时间、期号范围、记录数、拒绝原因及 CSV SHA-256，且只记录相对 CSV 文件名，
-不持久化本机绝对路径。`data/`、下载 HTML、CSV 和运行结果继续由 `.gitignore`
+不持久化本机绝对路径。`data_cache/`、下载 HTML、CSV 和运行结果继续由 `.gitignore`
 排除，不将本次全量响应作为 fixture 提交。

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from scripts.backtest_baselines import _load_metadata, _resolve_scoped_path
 from src.scientific.evaluation import (
     evaluate_indices,
     make_temporal_split,
@@ -204,3 +205,19 @@ def test_scientific_modules_do_not_import_torch():
     history = _draws(20)
     scores = score_numbers(history, "historical_frequency", StrategyParameters())
     assert scores.shape == (80,)
+
+
+def test_report_metadata_removes_absolute_local_path(tmp_path):
+    data_path = tmp_path / "data.csv"
+    (tmp_path / "download_meta.json").write_text(
+        '{"saved_path":"X:/outside/data.csv","csv_file":"nested/data.csv"}',
+        encoding="utf-8",
+    )
+    metadata = _load_metadata(data_path)
+    assert metadata["saved_path"] == "data.csv"
+    assert metadata["csv_file"] == "data.csv"
+
+
+def test_backtest_output_path_rejects_outside_scoped_directory():
+    with pytest.raises(SystemExit, match="结果目录必须位于"):
+        _resolve_scoped_path("../outside", "results", "结果目录")

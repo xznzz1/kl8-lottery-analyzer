@@ -18,16 +18,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.scientific.evaluation import TemporalSplit  # noqa: E402
-from src.scientific.evaluation import (
+from src.scientific.evaluation import (  # noqa: E402
     evaluate_indices,
     load_history_csv,
     make_temporal_split,
     tune_on_validation,
 )
 from src.scientific.prizes import PrizeScenario  # noqa: E402
-from src.scientific.prizes import exact_two_ticket_metrics
+from src.scientific.prizes import exact_two_ticket_metrics  # noqa: E402
 from src.scientific.statistics import hit_distribution  # noqa: E402
-from src.scientific.statistics import (
+from src.scientific.statistics import (  # noqa: E402
     holm_adjust,
     paired_mean_bootstrap_interval,
     paired_randomisation_test,
@@ -37,6 +37,19 @@ from src.scientific.statistics import (
 from src.scientific.strategies import StrategyParameters  # noqa: E402
 
 DEFAULT_RANDOM_SEEDS = tuple(range(202601, 202621))
+
+
+def _resolve_scoped_path(raw: str, allowed_dir: str, label: str) -> Path:
+    """将相对路径锚定仓库，并拒绝访问指定输出域之外的路径。"""
+
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    resolved = candidate.resolve()
+    allowed_root = (PROJECT_ROOT / allowed_dir).resolve()
+    if resolved != allowed_root and allowed_root not in resolved.parents:
+        raise SystemExit(f"{label}必须位于{allowed_root}内：{resolved}")
+    return resolved
 
 
 def _parse_seeds(raw: str) -> tuple[int, ...]:
@@ -50,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="快乐8无未来泄漏滚动回测；固定每期两注、每注2元。"
     )
-    parser.add_argument("--data", default="data/kl8/data.csv", help="历史CSV路径")
+    parser.add_argument("--data", default="data_cache/kl8/data.csv", help="历史CSV路径")
     parser.add_argument(
         "--output-dir", default="results/scientific", help="CSV输出目录"
     )
@@ -332,7 +345,14 @@ def _load_metadata(data_path: Path) -> dict[str, object]:
     metadata_path = data_path.parent / "download_meta.json"
     if not metadata_path.exists():
         return {"metadata_status": "download_meta.json缺失"}
-    return json.loads(metadata_path.read_text(encoding="utf-8"))
+    loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("download_meta.json顶层必须是对象")
+    metadata: dict[str, object] = dict(loaded)
+    for key in ("saved_path", "csv_file"):
+        if key in metadata and metadata[key] not in (None, ""):
+            metadata[key] = Path(str(metadata[key])).name
+    return metadata
 
 
 def _write_report(
@@ -480,7 +500,7 @@ def _write_report(
 
 ```powershell
 .venv\\Scripts\\python.exe scripts/get_data.py --name kl8
-.venv\\Scripts\\python.exe scripts/backtest_baselines.py --data data/kl8/data.csv --floating-prize-mode cap-scenario
+.venv\\Scripts\\python.exe scripts/backtest_baselines.py --data data_cache/kl8/data.csv --floating-prize-mode cap-scenario
 ```
 
 若获得逐期官方浮动奖、限赔及派奖数据，应改用明确标注的自定义情景或扩展逐期输入，再生成新的报告；不得覆盖本次holdout后重新调参。
@@ -494,9 +514,9 @@ def _write_report(
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     scenario = _scenario_from_args(args)
-    data_path = Path(args.data)
-    output_dir = Path(args.output_dir)
-    report_path = Path(args.report)
+    data_path = _resolve_scoped_path(args.data, "data_cache", "历史CSV")
+    output_dir = _resolve_scoped_path(args.output_dir, "results", "结果目录")
+    report_path = _resolve_scoped_path(args.report, "reports", "报告路径")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     issues, draws = load_history_csv(data_path)

@@ -18,7 +18,7 @@
   "csv_file": "data.csv",
   "csv_sha256": "fffab75fffd17a9a84f728a3a52c27fc8bc598a5630ffc60a43510dc8a4becb6",
   "earliest_issue": "2021313",
-  "fetched_at_utc": "2026-07-16T01:46:22.709075+00:00",
+  "fetched_at_utc": "2026-07-16T11:11:06.942184+00:00",
   "issue_range": {
     "earliest": "2021313",
     "latest": "2026186"
@@ -32,7 +32,7 @@
   },
   "saved_path": "data.csv",
   "source_url": "https://datachart.500.com/kl8/zoushi/newinc/jbzs_redblue.php?from=1&to=999999&shujcount=0&sort=0",
-  "timestamp": "2026-07-16T01:46:22.709075+00:00",
+  "timestamp": "2026-07-16T11:11:06.942184+00:00",
   "total_issues": 1630,
   "valid_rows": 1630
 }
@@ -151,9 +151,9 @@
 
 ```powershell
 .venv\Scripts\python.exe scripts/get_data.py --name kl8
-.venv\Scripts\python.exe scripts/backtest_baselines.py --data data/kl8/data.csv --floating-prize-mode cap-scenario
+.venv\Scripts\python.exe scripts/backtest_baselines.py --data data_cache/kl8/data.csv --floating-prize-mode cap-scenario
 ```
 
 若获得逐期官方浮动奖、限赔及派奖数据，应改用明确标注的自定义情景或扩展逐期输入，再生成新的报告；不得覆盖本次holdout后重新调参。
 
-生成时间（UTC）：`2026-07-16T02:28:39.000309+00:00`。
+生成时间（UTC）：`2026-07-16T11:15:02.623439+00:00`。

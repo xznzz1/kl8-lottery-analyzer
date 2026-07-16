@@ -78,7 +78,7 @@ flowchart LR
 ### 传统单线程数据流
 1. CLI 解析参数后调用 `get_data_run` 或 `load_history`。
 2. `common` 根据配置创建目录并委托 `data_fetcher` 执行网络请求。
-3. `data_fetcher` 使用带重试的 `LotteryHttpClient` 抓取数据，解析后写入 `data/kl8/data.csv`。
+3. `data_fetcher` 使用带重试的 `LotteryHttpClient` 抓取数据，解析后写入 `data_cache/kl8/data.csv`；配置层拒绝越过仓库内`data_cache/`、`results/`、`reports/`的输出路径。
 4. 分析脚本读取 CSV 进行概率统计、约束生成和收益回测。
 
 ### 🚀 优化多线程数据流（Plus版本）
