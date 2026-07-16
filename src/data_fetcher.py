@@ -92,8 +92,31 @@ def _build_history_url(config: LotteryModelConfig, start: Optional[int], end: Op
     return f"{base}newinc/jbzs_redblue.php?start={start_issue}&end={end_issue}&limit={limit}"
 
 
+def _extract_valid_numbers(values: Iterable[str], expected_count: int = 20) -> list[str]:
+    """从原始字段中提取1—80的号码，并校验数量和唯一性。"""
+
+    numbers: list[str] = []
+    for raw in values:
+        value = str(raw).strip()
+        if not value.isdigit():
+            continue
+
+        number = int(value)
+        if 1 <= number <= 80:
+            numbers.append(str(number))
+
+    if len(numbers) != expected_count:
+        raise ValueError(
+            f"开奖号码数量异常：期望{expected_count}个，实际{len(numbers)}个，内容={numbers}"
+        )
+
+    if len(set(numbers)) != expected_count:
+        raise ValueError(f"开奖号码存在重复：{numbers}")
+
+    return numbers
+
 def _parse_issue_list(config: LotteryModelConfig, html: str) -> pd.DataFrame:
-    """解析快乐 8 历史页面，返回包含 20 个球位的 DataFrame。"""
+    """解析快乐8网页历史数据。"""
 
     soup = BeautifulSoup(html, "lxml")
     tbody = soup.find("tbody", attrs={"id": "tdata"})
@@ -105,47 +128,87 @@ def _parse_issue_list(config: LotteryModelConfig, html: str) -> pd.DataFrame:
         tds = tr.find_all("td")
         if not tds:
             continue
+
         issue = tds[0].get_text(strip=True)
         if not issue or not issue.isdigit():
             continue
-        numbers = [
-            td.get_text(strip=True)
-            for td in tds
-            if td.get_text(strip=True).isdigit()
-        ]
-        if len(numbers) < config.red.sequence_len:
+
+        raw_values = [td.get_text(strip=True) for td in tds[1:]]
+        try:
+            numbers = _extract_valid_numbers(
+                raw_values,
+                expected_count=config.red.sequence_len,
+            )
+        except ValueError:
             continue
+
         record = {"期数": issue}
-        for idx, value in enumerate(numbers[: config.red.sequence_len]):
-            record[f"红球_{idx + 1}"] = value
+        for idx, value in enumerate(numbers, start=1):
+            record[f"红球_{idx}"] = value
         rows.append(record)
 
     if not rows:
         raise ValueError("解析开奖号码失败，未获取到有效数据")
+
     df = pd.DataFrame(rows)
     df.sort_values("期数", ascending=False, inplace=True)
     return df.reset_index(drop=True)
 
 
 def _parse_kl8_sequence(text: str) -> pd.DataFrame:
-    """解析 917500 顺序文本为 DataFrame。"""
+    """解析917500顺序数据。
+
+    每行格式为：
+    期号 日期 20个开奖号码,销售额及其他统计信息
+    """
 
     rows = []
-    for line in sorted(text.splitlines(), reverse=True):
+
+    for line in text.splitlines():
+        line = line.strip()
         if not line or "," not in line:
             continue
-        first_segment = line.split(",")[0]
-        parts = [item for item in first_segment.split(" ") if item]
-        if len(parts) < 21:
+
+        # 第一个逗号之前包含：期号、日期、20个开奖号码，
+        # 以及销售额的第一段，因此不能用数值范围筛选整段。
+        first_segment = line.split(",", 1)[0]
+        parts = first_segment.split()
+
+        # 期号 + 日期 + 20个号码，至少需要22个字段。
+        if len(parts) < 22:
             continue
-        issue = parts[0]
+
+        issue = parts[0].strip()
+        number_tokens = parts[2:22]
+
+        if not issue.isdigit():
+            continue
+
+        if len(number_tokens) != 20:
+            continue
+
+        if not all(
+            token.isdigit() and 1 <= int(token) <= 80
+            for token in number_tokens
+        ):
+            continue
+
+        numbers = [str(int(token)) for token in number_tokens]
+
+        if len(set(numbers)) != 20:
+            continue
+
         record = {"期数": issue}
-        for idx in range(1, 21):
-            record[f"红球_{idx}"] = parts[idx]
+        for index, value in enumerate(numbers, start=1):
+            record[f"红球_{index}"] = value
+
         rows.append(record)
+
     if not rows:
-        raise ValueError("快乐 8 出球顺序数据解析失败")
+        raise ValueError("快乐8出球顺序数据解析失败")
+
     df = pd.DataFrame(rows)
+    df.sort_values("期数", ascending=False, inplace=True)
     return df.reset_index(drop=True)
 
 
