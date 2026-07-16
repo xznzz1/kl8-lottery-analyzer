@@ -8,6 +8,7 @@ flowchart LR
         C[examples/analysis_example.py]
         D[🚀 kl8_analysis_plus.py]
         E[🚀 kl8_cash_plus.py]
+        F[scripts/backtest_baselines.py]
     end
 
     A --> COM[common.get_data_run]
@@ -15,6 +16,7 @@ flowchart LR
     C --> COM
     D --> COM
     E --> COM
+    F --> SCI[scientific evaluation]
 
     subgraph "优化并发架构"
         COM --> DOWNLOAD[单线程数据下载]
@@ -32,6 +34,9 @@ flowchart LR
     DF --> HTTP[LotteryHttpClient<br/>500.com / 917500]
     COM --> CFG[config]
     DF --> CFG
+    SCI --> DF
+    SCI --> PRIZE[版本化奖金与精确概率]
+    SCI --> STATS[bootstrap / 配对随机化 / Holm]
 
     CFG --> PATHS[(PATHS & 网络配置)]
 ```
@@ -43,6 +48,15 @@ flowchart LR
 - **`src.common`**：提供数据下载与期号查询的高层接口，同时复用 `data_fetcher` 和 `config`。
 - **`src.data_fetcher`**：负责 HTTP 请求、HTML/文本解析以及 CSV 写入，仅支持快乐 8。
 - **`src.config`**：集中维护路径、网络超时及彩票配置；`ensure_runtime_directories` 用于初始化运行目录。
+- **`src.scientific`**：独立于PyTorch的无泄漏路径，包含票面生成、版本化奖金、滚动切分、区间估计、配对检验和风险汇总。
+
+### 科学评估数据流
+
+1. 严格解析500.com的81单元格开奖行并保存SHA-256元信息；完整数据留在忽略目录。
+2. CSV按期号升序校验；最后20%冻结为final holdout，其前滚动验证区间只用于预注册参数网格。
+3. 对目标期`t`，所有策略只能读取`draws[:t]`；两种出票方式各生成恰好两注。
+4. 同期开奖与20个seed随机基线配对，输出bootstrap区间、随机化检验和Holm校正。
+5. 玩法排名使用精确组合概率；经验回测输出风险路径。浮动奖必须标注逐期输入或显式情景。
 
 ### 🚀 多线程优化模块（Plus版本）
 - **`kl8_analysis_plus.py`**：优化多线程号码生成器
@@ -64,7 +78,7 @@ flowchart LR
 ### 传统单线程数据流
 1. CLI 解析参数后调用 `get_data_run` 或 `load_history`。
 2. `common` 根据配置创建目录并委托 `data_fetcher` 执行网络请求。
-3. `data_fetcher` 使用带重试的 `LotteryHttpClient` 抓取数据，解析后写入 `data/kl8/data.csv`。
+3. `data_fetcher` 使用带重试的 `LotteryHttpClient` 抓取数据，解析后写入 `data_cache/kl8/data.csv`；配置层拒绝越过仓库内`data_cache/`、`results/`、`reports/`的输出路径。
 4. 分析脚本读取 CSV 进行概率统计、约束生成和收益回测。
 
 ### 🚀 优化多线程数据流（Plus版本）

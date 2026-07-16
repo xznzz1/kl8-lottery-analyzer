@@ -7,12 +7,11 @@ import argparse
 import sys
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.data_fetcher import download_history
+from src.data_fetcher import download_history  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +29,8 @@ def parse_args() -> argparse.Namespace:
         choices=(0, 1),
         help="是否使用出球顺序：0=号码排序，1=出球顺序",
     )
+    parser.add_argument("--start", type=int, help="可选起始期号")
+    parser.add_argument("--end", type=int, help="可选结束期号")
     return parser.parse_args()
 
 
@@ -42,6 +43,8 @@ def main() -> None:
 
     download_history(
         code="kl8",
+        start=args.start,
+        end=args.end,
         use_sequence_order=bool(args.cq),
     )
 

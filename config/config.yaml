@@ -9,11 +9,12 @@ app:
 
 # 路径配置
 paths:
-  data: "./data"
-  model: "./model"
-  predict: "./predict"
-  logs: "./logs"
+  data: "./data_cache"
+  model: "./data_cache/models"
+  predict: "./results/predict"
+  logs: "./results/logs"
   results: "./results"
+  reports: "./reports"
   data_cache: "./data_cache"
 
 # 网络配置

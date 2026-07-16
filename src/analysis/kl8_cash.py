@@ -27,6 +27,13 @@ except Exception:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from src.analysis.shared_cash import CASH_SELECT_LIST, CASH_PRICE_LIST  # type: ignore
+try:
+    from .shared_utils import compute_output_dir  # type: ignore
+except Exception:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.shared_utils import compute_output_dir  # type: ignore
 
 
 parser = argparse.ArgumentParser()
@@ -48,16 +55,7 @@ parser.add_argument('--calculate_rate', default=0, type=int, help='useless')
 parser.add_argument('--calculate_rate_list', default="5", type=str, help='useless')
 args = parser.parse_args()
 
-if args.random_mode == 0:
-    if args.path == "":
-            file_path = "./results/" 
-    else:
-        file_path = "./results_" + args.path + "/"
-elif args.random_mode == 1:
-    if args.path == "":
-        file_path = "./random/"
-    else:
-        file_path = "./random_" + args.path + "/"
+file_path = compute_output_dir(args.random_mode, args.path)
 endstring = ["csv"]
 name = args.name
 nums_index = 0
@@ -142,16 +140,7 @@ def check_lottery(cash_file_name, args, all_cash=0, all_lucky=0, path_mode=0):
 if __name__ == "__main__":
     nums_index = 0
     if args.path == "" or args.cash_file_name != "-1":
-        if args.random_mode == 0:
-            if args.path == "":
-                    file_path = "./results/" 
-            else:
-                file_path = "./results_" + args.path + "/"
-        elif args.random_mode == 1:
-            if args.path == "":
-                file_path = "./random/"
-            else:
-                file_path = "./random_" + args.path + "/" 
+        file_path = compute_output_dir(args.random_mode, args.path)
         if args.cash_file_name != "-1":
             cash_file_name = file_path + args.cash_file_name + ".csv"
         else:
@@ -166,16 +155,7 @@ if __name__ == "__main__":
                     args.current_nums = int(filename_split[-1].split('.')[0])
         check_lottery(cash_file_name=cash_file_name, args=args, path_mode=0)
     else:
-        if args.random_mode == 0:
-            if args.path == "":
-                    file_path = "./results/" 
-            else:
-                file_path = "./results_" + args.path + "/"
-        elif args.random_mode == 1:
-            if args.path == "":
-                file_path = "./random/"
-            else:
-                file_path = "./random_" + args.path + "/" 
+        file_path = compute_output_dir(args.random_mode, args.path)
         all_cash, all_lucky = 0, 0
         import os
         file_list = [_ for _ in os.listdir(file_path) if _.split('.')[1] in endstring]
@@ -194,4 +174,3 @@ if __name__ == "__main__":
         if args.simple_mode == 1:
             pbar.close()
         logger.info("{}, 总投入{}元，总奖金为{}元，返奖率{:.2f}%。".format(args.path, all_cash, all_lucky, all_lucky / all_cash * 100))
-    

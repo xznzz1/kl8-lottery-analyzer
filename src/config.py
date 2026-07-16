@@ -9,16 +9,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Any, Dict, Iterable
 
 import yaml
-import os
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_FILE = BASE_DIR / "config" / "config.yaml"
+_ALLOWED_OUTPUT_ROOT_NAMES = ("data_cache", "results", "reports")
 
 
-def _load_yaml_config() -> Dict[str, object]:
+def _load_yaml_config() -> Dict[str, Any]:
     if CONFIG_FILE.exists():
         with CONFIG_FILE.open(encoding="utf-8") as fp:
             return yaml.safe_load(fp) or {}
@@ -26,20 +26,63 @@ def _load_yaml_config() -> Dict[str, object]:
     return {}
 
 
-YAML_CONFIG: Dict[str, object] = _load_yaml_config()
+YAML_CONFIG: Dict[str, Any] = _load_yaml_config()
 
+
+def _resolve_output_path(value: object, default: Path) -> Path:
+    """解析项目输出路径，并拒绝落到仓库允许目录之外。"""
+
+    candidate = Path(str(value)) if value not in (None, "") else default
+    if not candidate.is_absolute():
+        candidate = BASE_DIR / candidate
+    resolved = candidate.resolve()
+    allowed_roots = [(BASE_DIR / name).resolve() for name in _ALLOWED_OUTPUT_ROOT_NAMES]
+    if not any(resolved == root or root in resolved.parents for root in allowed_roots):
+        raise ValueError(f"输出路径必须位于data_cache、results或reports内：{resolved}")
+    return resolved
+
+
+def resolve_scoped_output_path(value: object, default: Path, root_name: str) -> Path:
+    """解析并限制输出到指定的项目目录。
+
+    ``root_name`` 仅接受 ``data_cache``、``results`` 或 ``reports``。相对路径
+    始终以仓库根目录为基准，防止从其他工作目录启动脚本时写到 C 盘或仓库外。
+    """
+
+    if root_name not in _ALLOWED_OUTPUT_ROOT_NAMES:
+        raise ValueError(f"未知的输出目录边界：{root_name}")
+    resolved = _resolve_output_path(value, default)
+    root = (BASE_DIR / root_name).resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(f"输出路径必须位于{root_name}内：{resolved}")
+    return resolved
+
+
+_RAW_PATH_SECTION = YAML_CONFIG.get("paths", {})
+_PATH_SECTION: Dict[str, Any] = (
+    _RAW_PATH_SECTION if isinstance(_RAW_PATH_SECTION, dict) else {}
+)
 PATHS = {
-    "data": Path(YAML_CONFIG.get("paths", {}).get("data", BASE_DIR / "data")).resolve(),
-    "results": Path(YAML_CONFIG.get("paths", {}).get("results", BASE_DIR / "results")).resolve(),
-    "logs": Path(YAML_CONFIG.get("paths", {}).get("logs", BASE_DIR / "logs")).resolve(),
-    "data_cache": Path(YAML_CONFIG.get("paths", {}).get("data_cache", BASE_DIR / "data_cache")).resolve(),
+    "data": _resolve_output_path(_PATH_SECTION.get("data"), BASE_DIR / "data_cache"),
+    "results": _resolve_output_path(_PATH_SECTION.get("results"), BASE_DIR / "results"),
+    "reports": _resolve_output_path(_PATH_SECTION.get("reports"), BASE_DIR / "reports"),
+    "logs": _resolve_output_path(
+        _PATH_SECTION.get("logs"), BASE_DIR / "results" / "logs"
+    ),
+    "data_cache": _resolve_output_path(
+        _PATH_SECTION.get("data_cache"), BASE_DIR / "data_cache"
+    ),
 }
 
+_RAW_NETWORK_SECTION = YAML_CONFIG.get("network", {})
+_NETWORK_SECTION: Dict[str, Any] = (
+    _RAW_NETWORK_SECTION if isinstance(_RAW_NETWORK_SECTION, dict) else {}
+)
 NETWORK_CONFIG = {
-    "timeout": YAML_CONFIG.get("network", {}).get("timeout", 20),
-    "retry_count": YAML_CONFIG.get("network", {}).get("retry_count", 3),
-    "backoff_factor": YAML_CONFIG.get("network", {}).get("backoff_factor", 0.6),
-    "user_agent": YAML_CONFIG.get("network", {}).get(
+    "timeout": _NETWORK_SECTION.get("timeout", 20),
+    "retry_count": _NETWORK_SECTION.get("retry_count", 3),
+    "backoff_factor": _NETWORK_SECTION.get("backoff_factor", 0.6),
+    "user_agent": _NETWORK_SECTION.get(
         "user_agent",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -51,11 +94,21 @@ ALLOWED_DOMAINS = {"datachart.500.com", "data.917500.cn"}
 DATA_FILE_NAME = "data.csv"
 MODEL_METADATA_FILE = "metadata.json"
 
-_ANALYSIS_SECTION = YAML_CONFIG.get("analysis", {})
-_DIRICHLET_SECTION = _ANALYSIS_SECTION.get("dirichlet", {})
-_RULE_SECTION = _ANALYSIS_SECTION.get("rules", {})
-_COPULA_SECTION = _ANALYSIS_SECTION.get("copula", {})
-_GRAPH_SECTION = _ANALYSIS_SECTION.get("graph_embedding", {})
+_RAW_ANALYSIS_SECTION = YAML_CONFIG.get("analysis", {})
+_ANALYSIS_SECTION: Dict[str, Any] = (
+    _RAW_ANALYSIS_SECTION if isinstance(_RAW_ANALYSIS_SECTION, dict) else {}
+)
+
+
+def _nested_section(parent: Dict[str, Any], key: str) -> Dict[str, Any]:
+    value = parent.get(key, {})
+    return value if isinstance(value, dict) else {}
+
+
+_DIRICHLET_SECTION = _nested_section(_ANALYSIS_SECTION, "dirichlet")
+_RULE_SECTION = _nested_section(_ANALYSIS_SECTION, "rules")
+_COPULA_SECTION = _nested_section(_ANALYSIS_SECTION, "copula")
+_GRAPH_SECTION = _nested_section(_ANALYSIS_SECTION, "graph_embedding")
 
 DIRICHLET_CONFIG = {
     "prior_strength": float(_DIRICHLET_SECTION.get("prior_strength", 0.5)),
@@ -71,6 +124,7 @@ RULE_MINER_CONFIG = {
     "soft_penalty_weight": float(_RULE_SECTION.get("soft_penalty_weight", 0.4)),
 }
 
+_COPULA_RANDOM_SEED = _COPULA_SECTION.get("random_seed")
 COPULA_CONFIG = {
     "enabled": bool(_COPULA_SECTION.get("enabled", True)),
     "min_draws": int(_COPULA_SECTION.get("min_draws", 200)),
@@ -78,7 +132,9 @@ COPULA_CONFIG = {
     "shrinkage": float(_COPULA_SECTION.get("shrinkage", 0.12)),
     "topk_multiplier": float(_COPULA_SECTION.get("topk_multiplier", 1.3)),
     "random_seed": (
-        None if _COPULA_SECTION.get("random_seed") in (None, "", "null") else int(_COPULA_SECTION.get("random_seed"))
+        None
+        if _COPULA_RANDOM_SEED in (None, "", "null")
+        else int(str(_COPULA_RANDOM_SEED))
     ),
 }
 
@@ -86,9 +142,10 @@ GRAPH_EMBED_CONFIG = {
     "enabled": bool(_GRAPH_SECTION.get("enabled", True)),
     "embedding_dim": int(_GRAPH_SECTION.get("embedding_dim", 32)),
     "cache_file": str(
-        _GRAPH_SECTION.get(
-            "cache_file",
-            str(PATHS["data_cache"] / "graph_embeddings.npz"),
+        resolve_scoped_output_path(
+            _GRAPH_SECTION.get("cache_file"),
+            PATHS["data_cache"] / "graph_embeddings.npz",
+            "data_cache",
         )
     ),
     "weight": float(_GRAPH_SECTION.get("weight", 0.16)),
@@ -184,17 +241,15 @@ __all__ = [
     "get_lottery_config",
     "name_path",
     "predict_path",
+    "resolve_scoped_output_path",
 ]
 
-ball_name = [
-    ("红球", "red"),
-    ("蓝球", "blue")
-]
+ball_name = [("红球", "red"), ("蓝球", "blue")]
 
 data_file_name = "data.csv"
 data_cq_file_name = "data_cq.csv"
-predict_path = "./predict/"
-result_path = './results/'
+predict_path = f"{(PATHS['results'] / 'predict').as_posix()}/"
+result_path = f"{PATHS['results'].as_posix()}/"
 
 # Network configuration for crawlers
 HTTP_ALLOWLIST = [
@@ -203,7 +258,7 @@ HTTP_ALLOWLIST = [
 ]
 
 # Local cache directory for crawler fallback
-HTTP_CACHE_DIR = os.path.join(os.getcwd(), "data_cache")
+HTTP_CACHE_DIR = str(PATHS["data_cache"] / "http")
 
 # HTTP retry/backoff defaults (used by src.common.get_http_session_with_backoff)
 HTTP_RETRIES = 3
@@ -211,29 +266,14 @@ HTTP_BACKOFF_BASE = 0.5
 HTTP_REQUEST_DELAY = 0.0  # seconds between retries (additional to exponential backoff)
 
 name_path = {
-    "ssq": {
-        "name": "双色球",
-        "path": "data/ssq/"
-    },
-    "dlt": {
-        "name": "大乐透",
-        "path": "data/dlt/"
-    },
-    "qxc": {
-        "name": "七星彩",
-        "path": "data/qxc/"
-    },
-    "pls": {
-        "name": "排列三",
-        "path": "data/pls/"
-    },
-    "kl8": {
-        "name": "快乐8",
-        "path": "data/kl8/"
-    },
+    "ssq": {"name": "双色球", "path": f"{(PATHS['data'] / 'ssq').as_posix()}/"},
+    "dlt": {"name": "大乐透", "path": f"{(PATHS['data'] / 'dlt').as_posix()}/"},
+    "qxc": {"name": "七星彩", "path": f"{(PATHS['data'] / 'qxc').as_posix()}/"},
+    "pls": {"name": "排列三", "path": f"{(PATHS['data'] / 'pls').as_posix()}/"},
+    "kl8": {"name": "快乐8", "path": f"{(PATHS['data'] / 'kl8').as_posix()}/"},
 }
 
-model_path = os.getcwd() + "/model/"
+model_path = f"{(PATHS['data_cache'] / 'models').as_posix()}/"
 
 model_args = {
     "kl8": {
@@ -262,19 +302,14 @@ model_args = {
             "blue_learning_rate": 0.001,
             "blue_beta1": 0.9,
             "blue_beta2": 0.999,
-            "blue_epsilon": 1e-08
+            "blue_epsilon": 1e-08,
         },
         "path": {
             "red": model_path + "/kl8/red_ball_model/",
-            "blue": model_path + "/kl8/blue_ball_model/"
+            "blue": model_path + "/kl8/blue_ball_model/",
         },
-        "pathname": {
-            "name":"/kl8/"
-        },
-        "subpath": {
-            "red": "/red_ball_model/",
-            "blue": "/blue_ball_model/"
-        }
+        "pathname": {"name": "/kl8/"},
+        "subpath": {"red": "/red_ball_model/", "blue": "/blue_ball_model/"},
     },
     "pls": {
         "model_args": {
@@ -302,19 +337,14 @@ model_args = {
             "blue_learning_rate": 0.001,
             "blue_beta1": 0.9,
             "blue_beta2": 0.999,
-            "blue_epsilon": 1e-08
+            "blue_epsilon": 1e-08,
         },
         "path": {
             "red": model_path + "/pls/red_ball_model/",
-            "blue": model_path + "/pls/blue_ball_model/"
+            "blue": model_path + "/pls/blue_ball_model/",
         },
-        "pathname": {
-            "name":"/pls/"
-        },
-        "subpath": {
-            "red": "/red_ball_model/",
-            "blue": "/blue_ball_model/"
-        }
+        "pathname": {"name": "/pls/"},
+        "subpath": {"red": "/red_ball_model/", "blue": "/blue_ball_model/"},
     },
     "ssq": {
         "model_args": {
@@ -342,19 +372,14 @@ model_args = {
             "blue_learning_rate": 0.001,
             "blue_beta1": 0.9,
             "blue_beta2": 0.999,
-            "blue_epsilon": 1e-08
+            "blue_epsilon": 1e-08,
         },
         "path": {
             "red": model_path + "/ssq/red_ball_model/",
-            "blue": model_path + "/ssq/blue_ball_model/"
+            "blue": model_path + "/ssq/blue_ball_model/",
         },
-        "pathname": {
-            "name":"/ssq/"
-        },
-        "subpath": {
-            "red": "/red_ball_model/",
-            "blue": "/blue_ball_model/"
-        }
+        "pathname": {"name": "/ssq/"},
+        "subpath": {"red": "/red_ball_model/", "blue": "/blue_ball_model/"},
     },
     "dlt": {
         "model_args": {
@@ -371,7 +396,7 @@ model_args = {
             "blue_epochs": 1,
             "blue_embedding_size": 32,
             "blue_hidden_size": 32,
-            "blue_layer_size": 1
+            "blue_layer_size": 1,
         },
         "train_args": {
             "red_learning_rate": 0.001,
@@ -381,20 +406,15 @@ model_args = {
             "blue_learning_rate": 0.001,
             "blue_beta1": 0.9,
             "blue_beta2": 0.999,
-            "blue_epsilon": 1e-08
+            "blue_epsilon": 1e-08,
         },
         "path": {
             "red": model_path + "/dlt/red_ball_model/",
-            "blue": model_path + "/dlt/blue_ball_model/"
+            "blue": model_path + "/dlt/blue_ball_model/",
         },
-        "pathname": {
-            "name":"/dlt/"
-        },
-        "subpath": {
-            "red": "/red_ball_model/",
-            "blue": "/blue_ball_model/"
-        }
-    }
+        "pathname": {"name": "/dlt/"},
+        "subpath": {"red": "/red_ball_model/", "blue": "/blue_ball_model/"},
+    },
 }
 
 # 模型名

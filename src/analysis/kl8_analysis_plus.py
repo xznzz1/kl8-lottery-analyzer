@@ -3,6 +3,15 @@
 Author: KittenCN
 """
 
+import os
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MPL_CACHE_DIR = PROJECT_ROOT.parent / ".cache" / "matplotlib"
+MPL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["MPLCONFIGDIR"] = str(MPL_CACHE_DIR)
+
 import pandas as pd
 try:
     import matplotlib.pyplot as plt
@@ -11,9 +20,6 @@ except ImportError:
 import random
 import argparse
 import datetime
-import os
-import sys
-from pathlib import Path
 # import time
 # import threading
 # import subprocess
@@ -172,7 +178,14 @@ limit_line = args.limit_line
 rule_filter = None
 ori_avg_rate = [0.05, 0.05, 0.05, 0.05, 0.01, 0.05]
 ori_shiftings_list = [ori_avg_rate] * 10
-rate_file = "./kl8_rate.csv"
+rate_file = str(
+    resolve_scoped_output_path(
+        PATHS["results"] / "legacy" / "kl8_rate.csv",
+        PATHS["results"] / "legacy" / "kl8_rate.csv",
+        "results",
+    )
+)
+Path(rate_file).parent.mkdir(parents=True, exist_ok=True)
 if os.path.exists(rate_file):
     rate_data = pd.read_csv(rate_file)
     ori_shiftings_list = rate_data.to_numpy()
@@ -991,7 +1004,6 @@ if __name__ == "__main__":
         ori_numpy = ori_numpy[index_diff:]
     
     if args.rule_filter in {"soft", "hard"}:
-        global rule_filter
         filter_kwargs = {}
         if args.rule_support > 0:
             filter_kwargs["min_support"] = args.rule_support

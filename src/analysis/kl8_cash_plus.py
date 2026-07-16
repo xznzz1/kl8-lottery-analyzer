@@ -31,6 +31,13 @@ except Exception:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from src.analysis.shared_cash import CASH_SELECT_LIST, CASH_PRICE_LIST  # type: ignore
+try:
+    from .shared_utils import compute_output_dir  # type: ignore
+except Exception:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from src.analysis.shared_utils import compute_output_dir  # type: ignore
 
 
 parser = argparse.ArgumentParser()
@@ -53,16 +60,7 @@ parser.add_argument('--calculate_rate_list', default="5", type=str, help='useles
 parser.add_argument('--max_workers', default=4, type=int, help='useless')
 args = parser.parse_args()
 
-if args.random_mode == 0:
-    if args.path == "":
-            file_path = "./results/" 
-    else:
-        file_path = "./results_" + args.path + "/"
-elif args.random_mode == 1:
-    if args.path == "":
-        file_path = "./random/"
-    else:
-        file_path = "./random_" + args.path + "/"
+file_path = compute_output_dir(args.random_mode, args.path)
 endstring = ["csv"]
 name = args.name
 nums_index = 0
@@ -177,18 +175,29 @@ def check_file(_file_name):
         return False
 
 ## 多线程调用写入文件
-def write_file(_content,_file_name="./kl8_runnint_results.txt"):
+def write_file(_content, _file_name=None):
     # t = threading.Thread(target=write_file_core, args=(_content, _file_name))
-    t = Process(target=write_file_core, args=(_content, _file_name))
+    output_path = resolve_scoped_output_path(
+        _file_name,
+        PATHS["results"] / "legacy" / "kl8_running_results.txt",
+        "results",
+    )
+    t = Process(target=write_file_core, args=(_content, str(output_path)))
     t.start()
 
 ## 写入文件
-def write_file_core(_content,_file_name="./kl8_runnint_results.txt"):
-    if check_file(_file_name):
+def write_file_core(_content, _file_name=None):
+    output_path = resolve_scoped_output_path(
+        _file_name,
+        PATHS["results"] / "legacy" / "kl8_running_results.txt",
+        "results",
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if check_file(output_path):
         write_mode = "a"
     else:
         write_mode = "w"
-    with open(_file_name, write_mode) as f:
+    with output_path.open(write_mode, encoding="utf-8") as f:
         for item in _content:
             f.write(item + "\n")
 
@@ -202,16 +211,7 @@ if __name__ == "__main__":
     
     nums_index = 0
     if args.path == "" or args.cash_file_name != "-1":
-        if args.random_mode == 0:
-            if args.path == "":
-                    file_path = "./results/" 
-            else:
-                file_path = "./results_" + args.path + "/"
-        elif args.random_mode == 1:
-            if args.path == "":
-                file_path = "./random/"
-            else:
-                file_path = "./random_" + args.path + "/" 
+        file_path = compute_output_dir(args.random_mode, args.path)
         if args.cash_file_name != "-1":
             cash_file_name = file_path + args.cash_file_name + ".csv"
         else:
@@ -231,16 +231,7 @@ if __name__ == "__main__":
         all_cash, all_lucky, file_content, _ = check_lottery(file_dir, filename, args, ori_data)
         content.extend(file_content)
     else:
-        if args.random_mode == 0:
-            if args.path == "":
-                    file_path = "./results/" 
-            else:
-                file_path = "./results_" + args.path + "/"
-        elif args.random_mode == 1:
-            if args.path == "":
-                file_path = "./random/"
-            else:
-                file_path = "./random_" + args.path + "/" 
+        file_path = compute_output_dir(args.random_mode, args.path)
         all_cash, all_lucky = 0, 0
         import os
         file_list = [_ for _ in os.listdir(file_path) if _.split('.')[1] in endstring]

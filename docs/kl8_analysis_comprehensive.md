@@ -229,8 +229,9 @@ return_rate = total_cash / (len(cash_numpy) * 2) * 100  # 返奖率 = 总奖金 
 
 2. **结果异步写入**：
    ```python
-   def write_file(content, file_name="./kl8_running_results.txt"):
-       t = Process(target=write_file_core, args=(content, file_name))
+   def write_file(content, file_name=None):
+       output = file_name or (PATHS["results"] / "legacy" / "kl8_running_results.txt")
+       t = Process(target=write_file_core, args=(content, output))
        t.start()
    ```
 
