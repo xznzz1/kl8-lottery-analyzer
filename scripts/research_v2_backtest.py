@@ -500,6 +500,7 @@ def build_report(
     calibrations: dict[str, CalibrationResult],
     *,
     data_path: Path,
+    project_root: Path = PROJECT_ROOT,
 ) -> str:
     dynamic_brier = _ordinary_mean_interval(metrics.dynamic_brier)
     uniform_brier = _ordinary_mean_interval(metrics.uniform_brier)
@@ -601,7 +602,7 @@ def build_report(
     )
     best_top10_hits = float(hits_by_strategy[best_top10_strategy][:, 9].mean())
     data_hash = hashlib.sha256(data_path.read_bytes()).hexdigest()
-    relative_data_path = data_path.relative_to(PROJECT_ROOT).as_posix()
+    relative_data_path = data_path.relative_to(project_root).as_posix()
     first_outer = int(result.outer_issues[0])
     last_outer = int(result.outer_issues[-1])
     first_inner = int(result.issues[config.minimum_history])

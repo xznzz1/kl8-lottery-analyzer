@@ -22,6 +22,7 @@ from src.research_v2.evaluation import (
 from src.research_v2.metrics import CalibrationResult
 
 ROOT = Path(__file__).resolve().parents[1]
+TEST_DATA_BYTES = b"issue,number_1,number_2\n" b"2020001,1,2\n" b"2020002,3,4\n"
 V1_SOURCE_HASHES = {
     "config/config.yaml": "03bef7cf395afe7cd8e62adf9e2eb06f2b25b7c27ce7f0e1ccf4154cf0f4f731",
     "scripts/prospective_evaluate.py": "621ebf4b30158b3566a51d6e0ba188bd7ba04cf45d47053c8315c12e8cd11923",
@@ -79,7 +80,20 @@ def script_fixture() -> ScriptFixture:
     )
 
 
-def _write_outputs(directory: Path, fixture: ScriptFixture) -> str:
+def _write_test_data(project_root: Path) -> Path:
+    data_path = project_root / "input" / "data.csv"
+    data_path.parent.mkdir(parents=True, exist_ok=True)
+    data_path.write_bytes(TEST_DATA_BYTES)
+    return data_path
+
+
+def _write_outputs(
+    directory: Path,
+    fixture: ScriptFixture,
+    *,
+    data_path: Path,
+    project_root: Path,
+) -> str:
     directory.mkdir(parents=True, exist_ok=True)
     backtest.write_issue_probabilities(
         directory / backtest.OUTPUT_FILENAMES[0], fixture.result
@@ -104,7 +118,8 @@ def _write_outputs(directory: Path, fixture: ScriptFixture) -> str:
         fixture.probability_metrics,
         fixture.topk_hits,
         fixture.calibrations,
-        data_path=ROOT / "data_cache/kl8/data.csv",
+        data_path=data_path,
+        project_root=project_root,
     )
     (directory / "report.md").write_text(report, encoding="utf-8")
     return report
@@ -119,7 +134,14 @@ def _read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
 def test_output_csv_fields_and_row_counts(
     tmp_path: Path, script_fixture: ScriptFixture
 ) -> None:
-    _write_outputs(tmp_path, script_fixture)
+    data_path = _write_test_data(tmp_path)
+    _write_outputs(
+        tmp_path / "outputs",
+        script_fixture,
+        data_path=data_path,
+        project_root=tmp_path,
+    )
+    output_dir = tmp_path / "outputs"
     outer_count = len(script_fixture.result.outer_indices)
     expected = {
         "issue_probabilities.csv": (
@@ -144,7 +166,7 @@ def test_output_csv_fields_and_row_counts(
         ),
     }
     for filename, (row_count, required_fields) in expected.items():
-        fields, rows = _read_csv(tmp_path / filename)
+        fields, rows = _read_csv(output_dir / filename)
         assert len(rows) == row_count
         assert required_fields.issubset(fields)
 
@@ -152,10 +174,21 @@ def test_output_csv_fields_and_row_counts(
 def test_same_input_writes_byte_identical_outputs(
     tmp_path: Path, script_fixture: ScriptFixture
 ) -> None:
+    data_path = _write_test_data(tmp_path)
     first = tmp_path / "first"
     second = tmp_path / "second"
-    _write_outputs(first, script_fixture)
-    _write_outputs(second, script_fixture)
+    _write_outputs(
+        first,
+        script_fixture,
+        data_path=data_path,
+        project_root=tmp_path,
+    )
+    _write_outputs(
+        second,
+        script_fixture,
+        data_path=data_path,
+        project_root=tmp_path,
+    )
 
     for filename in (*backtest.OUTPUT_FILENAMES, "report.md"):
         assert (first / filename).read_bytes() == (second / filename).read_bytes()
@@ -164,15 +197,22 @@ def test_same_input_writes_byte_identical_outputs(
 def test_report_matches_issue_and_topk_csv_summaries(
     tmp_path: Path, script_fixture: ScriptFixture
 ) -> None:
-    report = _write_outputs(tmp_path, script_fixture)
-    _, issue_rows = _read_csv(tmp_path / "issue_metrics.csv")
+    data_path = _write_test_data(tmp_path)
+    output_dir = tmp_path / "outputs"
+    report = _write_outputs(
+        output_dir,
+        script_fixture,
+        data_path=data_path,
+        project_root=tmp_path,
+    )
+    _, issue_rows = _read_csv(output_dir / "issue_metrics.csv")
     dynamic_rows = [row for row in issue_rows if row["strategy"] == "dynamic_bayesian"]
     mean_brier = fmean(float(row["brier_score"]) for row in dynamic_rows)
     mean_log_loss = fmean(float(row["bernoulli_log_loss"]) for row in dynamic_rows)
     assert f"平均 Brier score 为 `{mean_brier:.9f}`" in report
     assert f"平均 Bernoulli log loss 为 `{mean_log_loss:.9f}`" in report
 
-    _, topk_rows = _read_csv(tmp_path / "topk_metrics.csv")
+    _, topk_rows = _read_csv(output_dir / "topk_metrics.csv")
     means = {
         strategy: fmean(
             float(row["actual_hits"])
@@ -186,6 +226,45 @@ def test_report_matches_issue_and_topk_csv_summaries(
         f"Top-10 历史平均命中最高的比较项为 `{best_strategy}`"
         f"（`{means[best_strategy]:.6f}`）"
     ) in report
+
+
+def test_outputs_do_not_read_repository_data_cache(
+    tmp_path: Path,
+    script_fixture: ScriptFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_data = (ROOT / "data_cache/kl8/data.csv").resolve()
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path.resolve() == repository_data:
+            raise FileNotFoundError(repository_data)
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    data_path = _write_test_data(tmp_path)
+    report = _write_outputs(
+        tmp_path / "outputs",
+        script_fixture,
+        data_path=data_path,
+        project_root=tmp_path,
+    )
+
+    expected_hash = hashlib.sha256(TEST_DATA_BYTES).hexdigest()
+    assert "输入数据：`input/data.csv`" in report
+    assert expected_hash in report
+
+
+def test_production_cli_defaults_are_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("sys.argv", ["research_v2_backtest.py"])
+
+    arguments = backtest.parse_args()
+
+    assert arguments.data == "data_cache/kl8/data.csv"
+    assert arguments.output_dir == "results/research_v2"
+    assert arguments.report == "reports/kl8_v2_research_report.md"
 
 
 def test_path_escape_is_rejected() -> None:
