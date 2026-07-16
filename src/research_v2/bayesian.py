@@ -1,4 +1,12 @@
-"""动态折扣 Beta-Bernoulli 模型。"""
+"""动态折扣 Beta-Bernoulli 概率模型。
+
+固定 ``decay`` 时，令 ``S_i`` 为号码 ``i`` 的折扣出现次数、``W`` 为折扣
+总权重、``s`` 为 ``prior_strength``，则
+``posterior_mean_i = (s * 0.25 + S_i) / (s + W)``。这是 ``S_i`` 的正仿射
+变换，因此与使用相同 ``decay`` 的指数频率 ``S_i / W`` 产生完全相同的
+号码排序。``prior_strength`` 只改变概率收缩、方差、可信区间和概率评分，
+不改变排序；3×3概率参数网格只有3种不同的排序机制。
+"""
 
 from __future__ import annotations
 
@@ -135,7 +143,11 @@ def _posterior_from_sufficient_statistics(
 def discounted_beta_bernoulli(
     history: FloatArray, parameters: BayesianParameters
 ) -> PosteriorPrediction:
-    """只用给定历史计算目标期的动态折扣 Beta-Bernoulli 后验。"""
+    """只用给定历史计算目标期的动态折扣 Beta-Bernoulli 后验。
+
+    对固定 ``decay``，后验均值是折扣出现次数的正仿射变换；所以更换
+    ``prior_strength`` 不会改变完整80位排名，只会改变概率及不确定性。
+    """
 
     array = validate_indicator_history(history)
     if len(array) == 0:

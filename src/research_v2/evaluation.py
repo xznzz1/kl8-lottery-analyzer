@@ -179,7 +179,11 @@ class NestedEvaluationConfig:
 
 @dataclass(frozen=True)
 class PosteriorGrid:
-    """所有预注册参数在每个目标时点之前形成的后验网格。"""
+    """所有预注册参数在每个目标时点之前形成的后验网格。
+
+    九个网格点是九种概率与不确定性设定；排序只由三个 ``decay`` 决定，
+    因为同一 ``decay`` 下的三个 ``prior_strength`` 不改变号码次序。
+    """
 
     parameters: tuple[BayesianParameters, ...]
     alpha: FloatArray

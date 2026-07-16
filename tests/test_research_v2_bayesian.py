@@ -9,6 +9,7 @@ from src.research_v2.bayesian import (
     BayesianParameters,
     candidate_sets,
     discounted_beta_bernoulli,
+    rank_probabilities,
 )
 
 
@@ -108,3 +109,53 @@ def test_candidate_ties_are_resolved_by_number_ascending() -> None:
 
     assert candidates[1] == (1,)
     assert candidates[10] == tuple(range(1, 11))
+
+
+def _manual_exponential_frequency_ranking(
+    history: np.ndarray, decay: float
+) -> np.ndarray:
+    ages = np.arange(len(history) - 1, -1, -1, dtype=np.float64)
+    weights = np.power(decay, ages)
+    scores = weights @ history / weights.sum()
+    numbers = np.arange(1, 81, dtype=np.int64)
+    return numbers[np.lexsort((numbers, -scores))]
+
+
+def test_dynamic_ranking_equals_manual_exponential_frequency_at_same_decay() -> None:
+    history = _persistent_high_frequency_history()
+    parameters = BayesianParameters(decay=0.99, prior_strength=20.0)
+    prediction = discounted_beta_bernoulli(history, parameters)
+
+    assert np.array_equal(
+        rank_probabilities(prediction.posterior_mean),
+        _manual_exponential_frequency_ranking(history, parameters.decay),
+    )
+
+
+def test_prior_strength_does_not_change_ranking_at_same_decay() -> None:
+    history = _persistent_high_frequency_history()
+    rankings = []
+    for prior_strength in (5.0, 20.0, 80.0):
+        prediction = discounted_beta_bernoulli(
+            history,
+            BayesianParameters(decay=0.995, prior_strength=prior_strength),
+        )
+        rankings.append(rank_probabilities(prediction.posterior_mean))
+
+    assert np.array_equal(rankings[0], rankings[1])
+    assert np.array_equal(rankings[1], rankings[2])
+
+
+def test_prior_strength_changes_probability_distance_from_quarter() -> None:
+    history = _persistent_high_frequency_history()
+    distances = []
+    for prior_strength in (5.0, 20.0, 80.0):
+        prediction = discounted_beta_bernoulli(
+            history,
+            BayesianParameters(decay=0.99, prior_strength=prior_strength),
+        )
+        distances.append(
+            float(np.linalg.norm(prediction.posterior_mean - FAIR_PROBABILITY))
+        )
+
+    assert distances[0] > distances[1] > distances[2] > 0.0
