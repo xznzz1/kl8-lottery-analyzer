@@ -9,9 +9,10 @@ All notable changes to this project will be documented in this file.
 - 科学高级基线禁用训练截止点不明的图嵌入缓存；零方差输入跳过PCA。
 - legacy下载入口不再吞掉严格下载器的完整性异常。
 - 数据下载默认迁移至`data_cache/kl8/`；配置与科学回测CLI强制输出限定在仓库内`data_cache/`、`results/`、`reports/`。
-- Makefile按文件位置锁定D盘仓库、固定`.venv`、临时目录和工具缓存；图嵌入与旧分析入口同步增加输出边界校验。
-- 批量分析子进程继承固定解释器、工作目录与D盘缓存环境；Matplotlib缓存和共享结果写入在最底层入口再次校验。
-- 核心路径质量门槛新增Ruff、严格mypy和80%覆盖率失败阈值，产物统一写入D盘允许目录。
+- Makefile按文件位置解析当前仓库、`.venv`、同级临时目录和工具缓存；图嵌入与旧分析入口同步增加仓库内输出边界校验。
+- 批量分析子进程继承固定解释器、仓库工作目录与同级缓存环境；Matplotlib缓存和共享结果写入在最底层入口再次校验。
+- 核心路径质量门槛新增Ruff、严格mypy和80%覆盖率失败阈值，产物统一写入仓库允许目录。
+- 随机seed ensemble事件区间改为按期cluster bootstrap；Wilson区间拒绝小数成功数。
 ### Security
 - 修复域名白名单的相似域绕过，并采用原子写入防止损坏数据覆盖。
 

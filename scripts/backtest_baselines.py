@@ -374,7 +374,7 @@ def _write_report(
         ).fillna(False)
     ]
     superiority = (
-        "没有策略在最终未接触holdout上、经过Holm多重检验校正后，单注平均命中数显著优于多seed均匀随机选号。"
+        "没有策略在原先预留、现已查看并冻结的final holdout上，经过Holm多重检验校正后，单注平均命中数显著优于多seed均匀随机选号。"
         if significant.empty
         else f"有{len(significant)}个策略×玩法×出票方式组合在校正后显著优于随机；需结合效应量和复现验证解读。"
     )
@@ -448,7 +448,7 @@ def _write_report(
 ## 防未来数据泄漏与反过拟合
 
 - 预测索引 `t` 的唯一输入为 `draws[:t]`；CSV先按期号严格升序，绝不以期号数值差代替行索引。
-- 最后20%（索引 `{split.holdout_start}` 至 `{split.total_issues - 1}`）是最终holdout；在冻结参数前不参与选择。
+- 最后20%（索引 `{split.holdout_start}` 至 `{split.total_issues - 1}`，{len(split.holdout_indices)}期）在首次评估前是未接触final holdout；本报告已查看其结果，因此该区间现已永久冻结，只能用于描述本次预注册检验。
 - 在holdout之前的滚动验证区间（索引 `{split.validation_start}` 至 `{split.holdout_start - 1}`）上，仅比较预注册窗口、衰减和hybrid权重网格。
 - 选中参数：窗口 `{parameters.rolling_window}`，衰减 `{parameters.decay}`，hybrid权重（全历史/滚动/衰减）`{parameters.hybrid_weights}`。
 - 高级方法每个时点重新只用既往历史计算，并禁用无法证明训练截止点的图嵌入缓存。
@@ -468,7 +468,7 @@ def _write_report(
 
 {_markdown_table(play_view, list(play_view.columns), 6)}
 
-## 策略比较（最终未接触holdout）
+## 策略比较（已查看并冻结的final holdout）
 
 主检验端点是每期两注的单注平均命中数。候选策略与 `{random_seed_count}` 个seed的逐期随机均值做配对符号翻转检验，并对5策略×10玩法×2出票方式的检验族使用Holm校正。符号翻转检验依赖零假设下配对差值符号可交换（通常以差值近似对称解释），因此这里将其作为有明确假设的近似随机化检验，而不是无条件精确检验。最靠近显著性的15项如下：
 
@@ -478,7 +478,7 @@ def _write_report(
 
 ## 统计不确定性
 
-平均命中、期望奖金、ROI及配对命中效应提供按期重抽样的95%百分位bootstrap区间；任意中奖、盈利及100/1000/10000元事件概率使用Wilson 95%区间，零次观测仍保留正上界。随机基线同时保留每个seed结果和ensemble汇总：事件先在每个seed×期上判定后平均，ensemble的Wilson区间以期数而不是seed×期数作为有效聚类数；回撤与最长亏损先沿各seed路径计算后平均，不构造不存在的“平均奖金票”。只展示一次随机选号会严重低估基线方差。配对设计消除了同期开奖难度的期间错配，但有限holdout对千元及万元事件仍可能非常稀疏。
+平均命中、期望奖金、ROI及配对命中效应提供按期重抽样的95%百分位bootstrap区间。单策略或单seed的真正二元事件使用整数成功数Wilson 95%区间；随机ensemble先计算每期跨seed事件率，再以期为cluster做百分位bootstrap，绝不把小数“成功数”代入Wilson。ensemble全零事件的经验bootstrap区间会退化为`[0, 0]`，这只表示当前期簇中未观察到事件，不证明真实概率为零；稀有事件仍需结合单seed Wilson、精确组合概率及更多未来期。回撤与最长亏损先沿各seed路径计算后平均，不构造不存在的“平均奖金票”。只展示一次随机选号会严重低估基线方差。
 
 ## 限制条件与稳健性边界
 
@@ -487,6 +487,7 @@ def _write_report(
 - 两版奖表按期号切换，但没有票面销售地，无法重建地方活动。
 - 对1000元、10000元门槛的样本外估计受稀有事件限制，应优先参考精确组合概率和区间，不应只看回测点估计。
 - 本次网格是预注册的小网格；更大的搜索空间必须另开新的未接触holdout，不能重复使用本报告holdout。
+- 当前{len(split.holdout_indices)}期final holdout已经查看并冻结；后续不得用它选择新策略、调整窗口/衰减/权重或支持新的预测主张。任何新预测主张必须等待未来数据，或预先划定另一个真正未接触的holdout。
 
 ## 针对每期4元玩家的大白话结论
 

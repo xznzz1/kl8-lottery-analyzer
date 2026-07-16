@@ -2,9 +2,9 @@
 
 ## 环境要求
 - 建议在名为 `python311` 的 Conda 环境中运行，保持依赖一致。
-- 本机自动执行固定使用 `D:\lottery\kl8-lottery-analyzer\.venv`；不得在C盘创建虚拟环境、数据、结果或缓存。
+- 本次Windows自动执行已验证仓库为 `D:\lottery\kl8-lottery-analyzer` 并使用其中的 `.venv`；不得在C盘创建仓库副本、虚拟环境、数据、结果或缓存。应用本身按当前仓库位置解析输出边界，不硬编码盘符。
 - 网络需可访问 `https://datachart.500.com` 与 `https://data.917500.cn`。
-- `make setup` 会先创建 `D:\lottery\.tmp`、`D:\lottery\.cache`，再安装依赖并创建 `data_cache/kl8`、`results/logs`、`reports`；Makefile按自身位置解析项目根，不受调用时当前目录影响。
+- `make setup` 会在当前仓库父目录创建 `.tmp`、`.cache`，再安装依赖并创建仓库内 `data_cache/kl8`、`results/logs`、`reports`；Makefile按自身位置解析项目根，不受调用时当前目录影响。本次检出中这些目录分别解析为 `D:\lottery\.tmp`、`D:\lottery\.cache`。
 - 建议在批量任务前执行：
   ```bash
   make download-data

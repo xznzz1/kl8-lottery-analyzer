@@ -13,17 +13,19 @@ def _percentile_interval(values: np.ndarray) -> tuple[float, float]:
 
 
 def wilson_score_interval(
-    successes: float, trials: int, z: float = 1.959963984540054
+    successes: int, trials: int, z: float = 1.959963984540054
 ) -> tuple[float, float]:
-    """返回比例的Wilson 95%区间，零事件时仍给出正上界。
+    """返回整数二项成功数的Wilson 95%区间，零事件仍有正上界。"""
 
-    ``successes``允许为小数，以支持把每期跨seed事件率作为一个聚类观测；
-    此时``trials``必须是独立期数，而不是seed×期数。
-    """
-
-    if trials <= 0 or not 0.0 <= successes <= trials:
-        raise ValueError("Wilson区间要求0<=成功数<=正试验数")
-    proportion = successes / trials
+    success_value = float(successes)
+    if (
+        trials <= 0
+        or not np.isfinite(success_value)
+        or not success_value.is_integer()
+        or not 0.0 <= success_value <= trials
+    ):
+        raise ValueError("Wilson区间要求整数成功数且0<=成功数<=正试验数")
+    proportion = int(success_value) / trials
     denominator = 1.0 + z * z / trials
     centre = (proportion + z * z / (2.0 * trials)) / denominator
     half_width = (
@@ -127,7 +129,7 @@ def summarise_period_records(
         seed=bootstrap_seed,
     )
     event_intervals = {
-        name: wilson_score_interval(float(values.sum()), len(values))
+        name: wilson_score_interval(int(values.sum()), len(values))
         for name, values in {
             "any_prize_probability": any_prize,
             "profit_probability": profit,
@@ -208,17 +210,14 @@ def summarise_seed_ensemble(
     derived["prize_at_least_10000_probability"] = (prizes >= 10000.0).astype(float)
     per_issue = derived.groupby("issue", sort=True).mean()
 
-    bootstrap_columns = {"mean_hits_per_bet", "expected_prize", "roi"}
+    # 同一期的多个seed不是独立试验：先聚合为逐期事件率，再整期重抽样。
+    # 这也避免把事件率之和（小数“成功数”）错误代入二项Wilson区间。
+    bootstrap_columns = tuple(per_issue.columns)
     bootstrap_intervals = _bootstrap_means(
         {name: per_issue[name].to_numpy(float) for name in bootstrap_columns},
         samples=bootstrap_samples,
         seed=bootstrap_seed,
     )
-    event_intervals = {
-        name: wilson_score_interval(float(per_issue[name].sum()), issue_count)
-        for name in per_issue.columns
-        if name not in bootstrap_columns
-    }
     seed_risks = [
         risk_metrics(group.sort_values("issue")["total_prize"].to_numpy(float))
         for _, group in records.groupby("seed", sort=True)
@@ -232,7 +231,7 @@ def summarise_seed_ensemble(
         ),
         "ending_profit": float(np.mean([risk["ending_profit"] for risk in seed_risks])),
     }
-    for name, (low, high) in {**bootstrap_intervals, **event_intervals}.items():
+    for name, (low, high) in bootstrap_intervals.items():
         result[f"{name}_ci95_low"] = low
         result[f"{name}_ci95_high"] = high
     return result

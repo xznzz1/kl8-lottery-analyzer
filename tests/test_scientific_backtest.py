@@ -164,15 +164,50 @@ def test_random_ensemble_averages_events_before_summary_not_prize_amounts():
     summary = summarise_seed_ensemble(records, bootstrap_samples=50)
     assert summary["issues"] == 2
     assert summary["any_prize_probability"] == pytest.approx(0.5)
+    assert summary["any_prize_probability_ci95_low"] == pytest.approx(0.5)
+    assert summary["any_prize_probability_ci95_high"] == pytest.approx(0.5)
     assert summary["prize_at_least_1000_probability"] == pytest.approx(0.25)
     assert summary["expected_prize"] == pytest.approx(502.0)
     assert "prize_at_least_1000_probability_ci95_low" in summary
     assert summary["prize_at_least_10000_probability"] == 0.0
-    assert summary["prize_at_least_10000_probability_ci95_high"] > 0.0
+    assert summary["prize_at_least_10000_probability_ci95_low"] == 0.0
+    assert summary["prize_at_least_10000_probability_ci95_high"] == 0.0
+
+
+def test_seed_ensemble_event_interval_bootstraps_whole_issues():
+    records = pd.DataFrame(
+        {
+            "issue": [1, 2, 3, 1, 2, 3],
+            "seed": [11, 11, 11, 22, 22, 22],
+            "hits1": [0, 0, 1, 0, 1, 1],
+            "hits2": [0, 0, 0, 0, 0, 0],
+            "prize1": [0.0, 0.0, 2.0, 0.0, 2.0, 2.0],
+            "prize2": [0.0] * 6,
+            "total_prize": [0.0, 0.0, 2.0, 0.0, 2.0, 2.0],
+        }
+    )
+
+    first = summarise_seed_ensemble(records, bootstrap_samples=5000, bootstrap_seed=7)
+    second = summarise_seed_ensemble(
+        records.sample(frac=1.0, random_state=19),
+        bootstrap_samples=5000,
+        bootstrap_seed=7,
+    )
+
+    assert first == second
+    assert first["any_prize_probability"] == pytest.approx(0.5)
+    # 三个独立期的跨seed事件率是[0, 0.5, 1]；整期bootstrap保留该聚类粒度。
+    assert first["any_prize_probability_ci95_low"] == 0.0
+    assert first["any_prize_probability_ci95_high"] == 1.0
+
+
+def test_wilson_interval_rejects_fractional_success_count():
+    with pytest.raises(ValueError, match="整数成功数"):
+        wilson_score_interval(1.5, 3)  # type: ignore[arg-type]
 
 
 def test_wilson_interval_does_not_claim_zero_risk_after_zero_events():
-    low, high = wilson_score_interval(0.0, 326)
+    low, high = wilson_score_interval(0, 326)
     assert low == 0.0
     assert 0.0 < high < 0.02
 

@@ -2,7 +2,7 @@
 
 本仓库提供快乐8历史数据下载、统计分析和严格时间滚动评估。科学评估的目标是检验策略能否在样本外优于随机选号，不宣称能够预测随机开奖；深度训练流程保持可选。
 
-> **环境要求**：本机固定使用 `D:\lottery\kl8-lottery-analyzer\.venv`（Python 3.11）；数据、结果、报告和缓存分别只写入仓库内的 `data_cache/`、`results/`、`reports/`，临时文件写入 `D:\lottery\.tmp`。
+> **环境要求**：本次Windows审计工作区为 `D:\lottery\kl8-lottery-analyzer`，并使用其中的 `.venv`（Python 3.11）；代码强制的是仓库内 `data_cache/`、`results/`、`reports/` 输出边界，而不是盘符。当前自动执行仍禁止在C盘创建仓库副本、虚拟环境、缓存或结果文件，临时文件使用 `D:\lottery\.tmp`。
 
 ## 功能清单
 - 🔄 `scripts/get_data.py`：下载快乐 8 历史数据，支持顺序出球模式。

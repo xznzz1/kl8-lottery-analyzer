@@ -4,13 +4,13 @@
 
 - 数据：实时复核500.com全量响应，1,955个原始行中1,630个有效期开奖行、325个空白分隔行，期号2021313—2026186；CSV和HTML未提交。
 - 实现：新增`src/scientific/`和`scripts/backtest_baselines.py`，固定两注4元，覆盖十种玩法、两种出票方式、六类策略、20个随机seed、区间估计、风险和多重检验。
-- 防泄漏：最终326期为未接触holdout；261期滚动验证选择预注册参数。禁用全样本图嵌入和不可审计缓存。
+- 防泄漏：最终326期在首次评估前为未接触holdout，当前结果已查看并永久冻结；261期滚动验证选择预注册参数。后续不得用这326期选择策略或重新调参，新主张必须使用未来数据或新的未接触holdout。
 - 奖金：按2025350切换规则版本，浮动奖采用显式情景；报告明确区分名义/情景奖金与实际兑付。
 - 结果：100个主检验组合中，没有任何策略在Holm校正后显著优于随机基线。
 - 复现：`.venv\Scripts\python.exe scripts/get_data.py --name kl8`，随后`.venv\Scripts\python.exe scripts/backtest_baselines.py --data data_cache/kl8/data.csv --floating-prize-mode cap-scenario`。
-- 存储：唯一根目录为`D:\lottery\kl8-lottery-analyzer`；数据、结果、报告限定在`data_cache/`、`results/`、`reports/`，临时文件使用`D:\lottery\.tmp`。
+- 存储：本次Windows执行已验证实际根目录为`D:\lottery\kl8-lottery-analyzer`；实现约束是当前仓库内`data_cache/`、`results/`、`reports/`输出边界，不是硬编码盘符。自动执行未在C盘创建仓库副本、虚拟环境、缓存或结果。
 - 审计：复核`scientific-model`近期提交及`src/data_fetcher.py`、`src/common.py`、`src/common_legacy.py`、`scripts/backtest_baselines.py`；未从旧提交拣选会退化严格解析或统计设计的实现。
-- 质量：完整测试`106 passed`；当前轻量下载、配置、可复用分析组件与科学评估路径覆盖率`84.60%`。核心路径启用Ruff、Black、flake8与严格mypy；旧深度训练/预测入口不计入该覆盖率，排除清单在`.coveragerc`和`ASSUMPTIONS.md`显式记录。当前系统未安装`make`，已逐项执行`fmt`、`lint`、`test`、`build`等价命令。
+- 质量：完整测试`108 passed`；当前轻量下载、配置、可复用分析组件与科学评估路径覆盖率`84.66%`。核心路径启用Ruff、Black、flake8与严格mypy；旧深度训练/预测入口不计入该覆盖率，排除清单在`.coveragerc`和`ASSUMPTIONS.md`显式记录。当前系统未安装`make`，已逐项执行`fmt`、`lint`、`test`、`build`等价命令。
 
 ## 2025-10-14 Copula 采样与图嵌入扩展
 - 在高级候选生成中引入 Copula 多样性采样与互信息惩罚（`src/analysis/copula_sampler.py`、`src/analysis/mutual_information.py`），提升号码相关性建模。

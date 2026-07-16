@@ -19,7 +19,7 @@ except Exception:
 
 
 def _child_environment():
-    """构造只写入D盘允许目录的子进程环境。"""
+    """构造只写入仓库及其同级临时/缓存目录的子进程环境。"""
 
     temp_root = LOTTERY_ROOT / ".tmp"
     cache_root = LOTTERY_ROOT / ".cache"
