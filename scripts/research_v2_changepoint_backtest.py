@@ -39,6 +39,8 @@ from src.research_v2.changepoint import (  # noqa: E402
 )
 from src.research_v2.changepoint_evaluation import (  # noqa: E402
     CHANGEPOINT_STRATEGY,
+    FIXED_HIGH_STRATEGY,
+    FIXED_NORMAL_STRATEGY,
     PHASE2_COMPARATOR_STRATEGIES,
     ChangepointEvaluationConfig,
     ChangepointEvaluationResult,
@@ -58,6 +60,8 @@ IntArray = NDArray[np.int64]
 PROBABILITY_STRATEGIES = (
     "uniform_random",
     DYNAMIC_STRATEGY,
+    FIXED_NORMAL_STRATEGY,
+    FIXED_HIGH_STRATEGY,
     CHANGEPOINT_STRATEGY,
 )
 OUTPUT_FILENAMES = (
@@ -68,17 +72,22 @@ OUTPUT_FILENAMES = (
     "state_metrics.csv",
     "calibration.csv",
     "trigger_intervals.csv",
+    "switch_diagnostics.csv",
 )
 
 
 @dataclass(frozen=True)
 class ProbabilityMetrics:
-    """逐期开奖期的三组概率评分。"""
+    """逐期开奖期的五组概率评分。"""
 
     changepoint_brier: FloatArray
     changepoint_log_loss: FloatArray
     dynamic_brier: FloatArray
     dynamic_log_loss: FloatArray
+    fixed_normal_brier: FloatArray
+    fixed_normal_log_loss: FloatArray
+    fixed_high_brier: FloatArray
+    fixed_high_log_loss: FloatArray
     uniform_brier: FloatArray
     uniform_log_loss: FloatArray
 
@@ -90,6 +99,18 @@ class TriggerInterval:
     start_issue: int
     end_issue: int
     issue_count: int
+
+
+@dataclass(frozen=True)
+class SwitchDiagnostic:
+    """自适应模型相对固定消融基线的状态内诊断。"""
+
+    comparator: str
+    scope: str
+    issue_count: int
+    ranking_difference_count: int
+    ranking_difference_proportion: float
+    probabilities_exactly_equal: bool
 
 
 def parse_args() -> argparse.Namespace:
@@ -188,9 +209,40 @@ def calculate_probability_metrics(
         changepoint_log_loss=log_losses(result.posterior_mean),
         dynamic_brier=dynamic_brier,
         dynamic_log_loss=log_losses(dynamic_probabilities),
+        fixed_normal_brier=cast(
+            FloatArray,
+            np.mean(np.square(result.fixed_normal_posterior_mean - outcomes), axis=1),
+        ),
+        fixed_normal_log_loss=log_losses(result.fixed_normal_posterior_mean),
+        fixed_high_brier=cast(
+            FloatArray,
+            np.mean(np.square(result.fixed_high_posterior_mean - outcomes), axis=1),
+        ),
+        fixed_high_log_loss=log_losses(result.fixed_high_posterior_mean),
         uniform_brier=uniform_brier,
         uniform_log_loss=log_losses(uniform_probabilities),
     )
+
+
+def _probability_metric_arrays(
+    metrics: ProbabilityMetrics,
+) -> dict[str, tuple[FloatArray, FloatArray]]:
+    return {
+        "uniform_random": (metrics.uniform_brier, metrics.uniform_log_loss),
+        DYNAMIC_STRATEGY: (metrics.dynamic_brier, metrics.dynamic_log_loss),
+        FIXED_NORMAL_STRATEGY: (
+            metrics.fixed_normal_brier,
+            metrics.fixed_normal_log_loss,
+        ),
+        FIXED_HIGH_STRATEGY: (
+            metrics.fixed_high_brier,
+            metrics.fixed_high_log_loss,
+        ),
+        CHANGEPOINT_STRATEGY: (
+            metrics.changepoint_brier,
+            metrics.changepoint_log_loss,
+        ),
+    }
 
 
 def calculate_topk_hits(
@@ -221,6 +273,12 @@ def calculate_calibration(
         DYNAMIC_STRATEGY: calibration_summary(
             result.phase1_result.posterior_mean, outcomes
         ),
+        FIXED_NORMAL_STRATEGY: calibration_summary(
+            result.fixed_normal_posterior_mean, outcomes
+        ),
+        FIXED_HIGH_STRATEGY: calibration_summary(
+            result.fixed_high_posterior_mean, outcomes
+        ),
         CHANGEPOINT_STRATEGY: calibration_summary(result.posterior_mean, outcomes),
     }
 
@@ -247,6 +305,52 @@ def find_trigger_intervals(
     return tuple(intervals)
 
 
+def calculate_switch_diagnostics(
+    result: ChangepointEvaluationResult,
+) -> tuple[SwitchDiagnostic, ...]:
+    """按全部、high_change和normal期比较自适应与两个固定消融模型。"""
+
+    scopes = (
+        ("all", np.ones(len(result.outer_indices), dtype=np.bool_)),
+        ("high_change", result.high_change),
+        ("normal", np.logical_not(result.high_change)),
+    )
+    comparisons = (
+        (
+            FIXED_NORMAL_STRATEGY,
+            result.ranking_differs_from_fixed_normal,
+            result.fixed_normal_posterior_mean,
+        ),
+        (
+            FIXED_HIGH_STRATEGY,
+            result.ranking_differs_from_fixed_high,
+            result.fixed_high_posterior_mean,
+        ),
+    )
+    rows: list[SwitchDiagnostic] = []
+    for comparator, ranking_differences, fixed_probabilities in comparisons:
+        for scope, mask in scopes:
+            count = int(mask.sum())
+            difference_count = int(ranking_differences[mask].sum())
+            rows.append(
+                SwitchDiagnostic(
+                    comparator=comparator,
+                    scope=scope,
+                    issue_count=count,
+                    ranking_difference_count=difference_count,
+                    ranking_difference_proportion=(
+                        0.0 if count == 0 else difference_count / count
+                    ),
+                    probabilities_exactly_equal=bool(
+                        np.array_equal(
+                            result.posterior_mean[mask], fixed_probabilities[mask]
+                        )
+                    ),
+                )
+            )
+    return tuple(rows)
+
+
 def write_issue_probabilities(path: Path, result: ChangepointEvaluationResult) -> None:
     fields = (
         "issue",
@@ -255,6 +359,9 @@ def write_issue_probabilities(path: Path, result: ChangepointEvaluationResult) -
         "number",
         "outcome",
         "posterior_mean",
+        "fixed_normal_posterior_mean",
+        "fixed_high_posterior_mean",
+        "equals_active_fixed_probability",
         "posterior_variance",
         "credible_interval_lower",
         "credible_interval_upper",
@@ -286,6 +393,22 @@ def write_issue_probabilities(path: Path, result: ChangepointEvaluationResult) -
                     "outcome": int(result.outer_outcomes[outer_offset, number_index]),
                     "posterior_mean": _float(
                         result.posterior_mean[outer_offset, number_index]
+                    ),
+                    "fixed_normal_posterior_mean": _float(
+                        result.fixed_normal_posterior_mean[outer_offset, number_index]
+                    ),
+                    "fixed_high_posterior_mean": _float(
+                        result.fixed_high_posterior_mean[outer_offset, number_index]
+                    ),
+                    "equals_active_fixed_probability": bool(
+                        result.posterior_mean[outer_offset, number_index]
+                        == (
+                            result.fixed_high_posterior_mean[outer_offset, number_index]
+                            if result.high_change[outer_offset]
+                            else result.fixed_normal_posterior_mean[
+                                outer_offset, number_index
+                            ]
+                        )
                     ),
                     "posterior_variance": _float(
                         result.posterior_variance[outer_offset, number_index]
@@ -330,22 +453,19 @@ def write_issue_metrics(
         "bernoulli_log_loss",
         "brier_delta_vs_uniform",
         "brier_delta_vs_dynamic_bayesian",
+        "brier_delta_vs_fixed_normal_bayesian",
+        "brier_delta_vs_fixed_high_bayesian",
         "log_loss_delta_vs_uniform",
         "log_loss_delta_vs_dynamic_bayesian",
+        "log_loss_delta_vs_fixed_normal_bayesian",
+        "log_loss_delta_vs_fixed_high_bayesian",
         "high_change",
         "independent_time_cluster",
         "evidence_status",
     )
 
     def rows() -> Iterable[dict[str, object]]:
-        arrays = {
-            "uniform_random": (metrics.uniform_brier, metrics.uniform_log_loss),
-            DYNAMIC_STRATEGY: (metrics.dynamic_brier, metrics.dynamic_log_loss),
-            CHANGEPOINT_STRATEGY: (
-                metrics.changepoint_brier,
-                metrics.changepoint_log_loss,
-            ),
-        }
+        arrays = _probability_metric_arrays(metrics)
         for offset, issue in enumerate(result.outer_issues):
             for strategy in PROBABILITY_STRATEGIES:
                 brier_values, log_values = arrays[strategy]
@@ -362,11 +482,23 @@ def write_issue_metrics(
                     "brier_delta_vs_dynamic_bayesian": _float(
                         brier - float(metrics.dynamic_brier[offset])
                     ),
+                    "brier_delta_vs_fixed_normal_bayesian": _float(
+                        brier - float(metrics.fixed_normal_brier[offset])
+                    ),
+                    "brier_delta_vs_fixed_high_bayesian": _float(
+                        brier - float(metrics.fixed_high_brier[offset])
+                    ),
                     "log_loss_delta_vs_uniform": _float(
                         log_loss - float(metrics.uniform_log_loss[offset])
                     ),
                     "log_loss_delta_vs_dynamic_bayesian": _float(
                         log_loss - float(metrics.dynamic_log_loss[offset])
+                    ),
+                    "log_loss_delta_vs_fixed_normal_bayesian": _float(
+                        log_loss - float(metrics.fixed_normal_log_loss[offset])
+                    ),
+                    "log_loss_delta_vs_fixed_high_bayesian": _float(
+                        log_loss - float(metrics.fixed_high_log_loss[offset])
                     ),
                     "high_change": bool(result.high_change[offset]),
                     "independent_time_cluster": int(issue),
@@ -509,6 +641,8 @@ def _state_rows(
             "issue_proportion": _float(count / len(result.outer_indices)),
             "changepoint_brier": mean(metrics.changepoint_brier),
             "dynamic_brier": mean(metrics.dynamic_brier),
+            "fixed_normal_brier": mean(metrics.fixed_normal_brier),
+            "fixed_high_brier": mean(metrics.fixed_high_brier),
             "uniform_brier": mean(metrics.uniform_brier),
             "changepoint_brier_delta_vs_dynamic": mean(
                 cast(FloatArray, metrics.changepoint_brier - metrics.dynamic_brier)
@@ -516,8 +650,22 @@ def _state_rows(
             "changepoint_brier_delta_vs_uniform": mean(
                 cast(FloatArray, metrics.changepoint_brier - metrics.uniform_brier)
             ),
+            "changepoint_brier_delta_vs_fixed_normal": mean(
+                cast(
+                    FloatArray,
+                    metrics.changepoint_brier - metrics.fixed_normal_brier,
+                )
+            ),
+            "changepoint_brier_delta_vs_fixed_high": mean(
+                cast(
+                    FloatArray,
+                    metrics.changepoint_brier - metrics.fixed_high_brier,
+                )
+            ),
             "changepoint_log_loss": mean(metrics.changepoint_log_loss),
             "dynamic_log_loss": mean(metrics.dynamic_log_loss),
+            "fixed_normal_log_loss": mean(metrics.fixed_normal_log_loss),
+            "fixed_high_log_loss": mean(metrics.fixed_high_log_loss),
             "uniform_log_loss": mean(metrics.uniform_log_loss),
             "changepoint_log_loss_delta_vs_dynamic": mean(
                 cast(
@@ -529,6 +677,18 @@ def _state_rows(
                 cast(
                     FloatArray,
                     metrics.changepoint_log_loss - metrics.uniform_log_loss,
+                )
+            ),
+            "changepoint_log_loss_delta_vs_fixed_normal": mean(
+                cast(
+                    FloatArray,
+                    metrics.changepoint_log_loss - metrics.fixed_normal_log_loss,
+                )
+            ),
+            "changepoint_log_loss_delta_vs_fixed_high": mean(
+                cast(
+                    FloatArray,
+                    metrics.changepoint_log_loss - metrics.fixed_high_log_loss,
                 )
             ),
             "independent_unit": "issue",
@@ -547,14 +707,22 @@ def write_state_metrics(
         "issue_proportion",
         "changepoint_brier",
         "dynamic_brier",
+        "fixed_normal_brier",
+        "fixed_high_brier",
         "uniform_brier",
         "changepoint_brier_delta_vs_dynamic",
         "changepoint_brier_delta_vs_uniform",
+        "changepoint_brier_delta_vs_fixed_normal",
+        "changepoint_brier_delta_vs_fixed_high",
         "changepoint_log_loss",
         "dynamic_log_loss",
+        "fixed_normal_log_loss",
+        "fixed_high_log_loss",
         "uniform_log_loss",
         "changepoint_log_loss_delta_vs_dynamic",
         "changepoint_log_loss_delta_vs_uniform",
+        "changepoint_log_loss_delta_vs_fixed_normal",
+        "changepoint_log_loss_delta_vs_fixed_high",
         "independent_unit",
         "evidence_status",
     )
@@ -633,6 +801,38 @@ def write_trigger_intervals(path: Path, intervals: tuple[TriggerInterval, ...]) 
     )
 
 
+def write_switch_diagnostics(
+    path: Path, diagnostics: tuple[SwitchDiagnostic, ...]
+) -> None:
+    fields = (
+        "comparator",
+        "scope",
+        "issue_count",
+        "ranking_difference_count",
+        "ranking_difference_proportion",
+        "probabilities_exactly_equal",
+        "evidence_status",
+    )
+    _write_csv(
+        path,
+        fields,
+        (
+            {
+                "comparator": row.comparator,
+                "scope": row.scope,
+                "issue_count": row.issue_count,
+                "ranking_difference_count": row.ranking_difference_count,
+                "ranking_difference_proportion": _float(
+                    row.ranking_difference_proportion
+                ),
+                "probabilities_exactly_equal": row.probabilities_exactly_equal,
+                "evidence_status": "exploratory_development_evidence",
+            }
+            for row in diagnostics
+        ),
+    )
+
+
 def _ordinary_mean_interval(values: FloatArray) -> tuple[float, float, float, float]:
     mean = float(np.mean(values))
     if len(values) <= 1:
@@ -662,22 +862,44 @@ def build_report(
     hits_by_strategy: dict[str, FloatArray],
     calibrations: dict[str, CalibrationResult],
     intervals: tuple[TriggerInterval, ...],
+    diagnostics: tuple[SwitchDiagnostic, ...],
     *,
     data_path: Path,
     project_root: Path = PROJECT_ROOT,
 ) -> str:
-    changepoint_brier = _ordinary_mean_interval(metrics.changepoint_brier)
-    dynamic_brier = _ordinary_mean_interval(metrics.dynamic_brier)
-    uniform_brier = _ordinary_mean_interval(metrics.uniform_brier)
+    metric_arrays = _probability_metric_arrays(metrics)
+    brier_intervals = {
+        strategy: _ordinary_mean_interval(values[0])
+        for strategy, values in metric_arrays.items()
+    }
+    log_intervals = {
+        strategy: _ordinary_mean_interval(values[1])
+        for strategy, values in metric_arrays.items()
+    }
+    brier_vs_normal = _ordinary_mean_interval(
+        cast(FloatArray, metrics.changepoint_brier - metrics.fixed_normal_brier)
+    )
+    brier_vs_high = _ordinary_mean_interval(
+        cast(FloatArray, metrics.changepoint_brier - metrics.fixed_high_brier)
+    )
+    log_vs_normal = _ordinary_mean_interval(
+        cast(
+            FloatArray,
+            metrics.changepoint_log_loss - metrics.fixed_normal_log_loss,
+        )
+    )
+    log_vs_high = _ordinary_mean_interval(
+        cast(
+            FloatArray,
+            metrics.changepoint_log_loss - metrics.fixed_high_log_loss,
+        )
+    )
     brier_vs_dynamic = _ordinary_mean_interval(
         cast(FloatArray, metrics.changepoint_brier - metrics.dynamic_brier)
     )
     brier_vs_uniform = _ordinary_mean_interval(
         cast(FloatArray, metrics.changepoint_brier - metrics.uniform_brier)
     )
-    changepoint_log = _ordinary_mean_interval(metrics.changepoint_log_loss)
-    dynamic_log = _ordinary_mean_interval(metrics.dynamic_log_loss)
-    uniform_log = _ordinary_mean_interval(metrics.uniform_log_loss)
     log_vs_dynamic = _ordinary_mean_interval(
         cast(FloatArray, metrics.changepoint_log_loss - metrics.dynamic_log_loss)
     )
@@ -685,82 +907,156 @@ def build_report(
         cast(FloatArray, metrics.changepoint_log_loss - metrics.uniform_log_loss)
     )
     trigger_count = int(result.high_change.sum())
-    rank_differences = result.ranking_differs_from_fixed_exponential
-    rank_difference_count = int(rank_differences.sum())
     period_count = len(result.outer_indices)
     probability_error = float(np.max(np.abs(result.posterior_mean.sum(axis=1) - 20.0)))
     window_counts = Counter(
         result.parameters[int(index)].recent_window
         for index in result.selected_parameter_indices
     )
+    diagnostic_lookup = {(row.comparator, row.scope): row for row in diagnostics}
+    normal_all = diagnostic_lookup[(FIXED_NORMAL_STRATEGY, "all")]
+    normal_high = diagnostic_lookup[(FIXED_NORMAL_STRATEGY, "high_change")]
+    normal_normal = diagnostic_lookup[(FIXED_NORMAL_STRATEGY, "normal")]
+    high_all = diagnostic_lookup[(FIXED_HIGH_STRATEGY, "all")]
+    high_high = diagnostic_lookup[(FIXED_HIGH_STRATEGY, "high_change")]
+    high_normal = diagnostic_lookup[(FIXED_HIGH_STRATEGY, "normal")]
+    if not normal_normal.probabilities_exactly_equal:
+        raise ValueError("报告前校验失败：normal状态不等于fixed_normal")
+    if not high_high.probabilities_exactly_equal:
+        raise ValueError("报告前校验失败：high_change状态不等于fixed_high")
+
+    simultaneously_better = (
+        brier_vs_normal[0] < 0.0
+        and brier_vs_high[0] < 0.0
+        and log_vs_normal[0] < 0.0
+        and log_vs_high[0] < 0.0
+    )
+    if simultaneously_better:
+        ablation_conclusion = (
+            "在这段已查看历史中，变点切换的平均 Brier 和 log loss 均低于两个固定消融基线；"
+            "这仍然只是探索性历史消融结果，不能证明未来优势。"
+        )
+    else:
+        ablation_conclusion = (
+            "当前历史结果没有证明变化检测和自适应切换优于简单固定权重方案："
+            "变点模型没有在平均 Brier 与 log loss 上同时优于两个固定消融基线。"
+        )
 
     probability_table = _markdown_table(
-        ("概率模型", "平均Brier", "相对动态", "相对随机", "平均log loss", "ECE"),
+        ("概率模型", "平均Brier", "平均log loss", "ECE"),
         (
             (
-                "uniform_random",
-                f"{uniform_brier[0]:.9f}",
-                f"{uniform_brier[0] - dynamic_brier[0]:+.9f}",
-                "0",
-                f"{uniform_log[0]:.9f}",
-                f"{calibrations['uniform_random'].expected_calibration_error:.9f}",
+                strategy,
+                f"{brier_intervals[strategy][0]:.9f}",
+                f"{log_intervals[strategy][0]:.9f}",
+                f"{calibrations[strategy].expected_calibration_error:.9f}",
+            )
+            for strategy in PROBABILITY_STRATEGIES
+        ),
+    )
+    ablation_delta_table = _markdown_table(
+        ("指标", "相对fixed_normal", "普通近似区间", "相对fixed_high", "普通近似区间"),
+        (
+            (
+                "Brier",
+                f"{brier_vs_normal[0]:+.9f}",
+                f"[{brier_vs_normal[2]:+.9f}, {brier_vs_normal[3]:+.9f}]",
+                f"{brier_vs_high[0]:+.9f}",
+                f"[{brier_vs_high[2]:+.9f}, {brier_vs_high[3]:+.9f}]",
             ),
             (
-                DYNAMIC_STRATEGY,
-                f"{dynamic_brier[0]:.9f}",
-                "0",
-                f"{dynamic_brier[0] - uniform_brier[0]:+.9f}",
-                f"{dynamic_log[0]:.9f}",
-                f"{calibrations[DYNAMIC_STRATEGY].expected_calibration_error:.9f}",
+                "Bernoulli log loss",
+                f"{log_vs_normal[0]:+.9f}",
+                f"[{log_vs_normal[2]:+.9f}, {log_vs_normal[3]:+.9f}]",
+                f"{log_vs_high[0]:+.9f}",
+                f"[{log_vs_high[2]:+.9f}, {log_vs_high[3]:+.9f}]",
             ),
             (
-                CHANGEPOINT_STRATEGY,
-                f"{changepoint_brier[0]:.9f}",
-                f"{brier_vs_dynamic[0]:+.9f}",
-                f"{brier_vs_uniform[0]:+.9f}",
-                f"{changepoint_log[0]:.9f}",
-                f"{calibrations[CHANGEPOINT_STRATEGY].expected_calibration_error:.9f}",
+                "ECE",
+                f"{calibrations[CHANGEPOINT_STRATEGY].expected_calibration_error - calibrations[FIXED_NORMAL_STRATEGY].expected_calibration_error:+.9f}",
+                "—",
+                f"{calibrations[CHANGEPOINT_STRATEGY].expected_calibration_error - calibrations[FIXED_HIGH_STRATEGY].expected_calibration_error:+.9f}",
+                "—",
             ),
         ),
     )
     topk_table = _markdown_table(
-        ("策略", "Top-1", "Top-5", "Top-10", "Top-10相对理论", "Top-10相对随机seed"),
+        ("策略", *(f"Top-{k}" for k in range(1, 11))),
         (
             (
                 strategy,
-                f"{hits_by_strategy[strategy][:, 0].mean():.6f}",
-                f"{hits_by_strategy[strategy][:, 4].mean():.6f}",
-                f"{hits_by_strategy[strategy][:, 9].mean():.6f}",
-                f"{hits_by_strategy[strategy][:, 9].mean() - 2.5:+.6f}",
-                f"{hits_by_strategy[strategy][:, 9].mean() - hits_by_strategy['uniform_random'][:, 9].mean():+.6f}",
+                *(
+                    f"{hits_by_strategy[strategy][:, k - 1].mean():.6f}"
+                    for k in range(1, 11)
+                ),
             )
             for strategy in PHASE2_COMPARATOR_STRATEGIES
         ),
     )
-    changepoint_topk_table = _markdown_table(
-        ("k", "平均命中", "随机理论k/4", "excess_hits", "相对随机seed"),
+    topk_ablation_table = _markdown_table(
+        ("k", "changepoint", "相对fixed_normal", "相对fixed_high"),
         (
             (
                 str(k),
                 f"{hits_by_strategy[CHANGEPOINT_STRATEGY][:, k - 1].mean():.6f}",
-                f"{k / 4.0:.6f}",
-                f"{hits_by_strategy[CHANGEPOINT_STRATEGY][:, k - 1].mean() - k / 4.0:+.6f}",
-                f"{hits_by_strategy[CHANGEPOINT_STRATEGY][:, k - 1].mean() - hits_by_strategy['uniform_random'][:, k - 1].mean():+.6f}",
+                f"{hits_by_strategy[CHANGEPOINT_STRATEGY][:, k - 1].mean() - hits_by_strategy[FIXED_NORMAL_STRATEGY][:, k - 1].mean():+.6f}",
+                f"{hits_by_strategy[CHANGEPOINT_STRATEGY][:, k - 1].mean() - hits_by_strategy[FIXED_HIGH_STRATEGY][:, k - 1].mean():+.6f}",
             )
             for k in range(1, 11)
         ),
     )
+    switch_table = _markdown_table(
+        ("比较", "范围", "范围期数", "排名不同期数", "比例"),
+        (
+            (
+                "changepoint vs fixed_normal",
+                "全部外层期",
+                str(normal_all.issue_count),
+                str(normal_all.ranking_difference_count),
+                f"{normal_all.ranking_difference_proportion:.2%}",
+            ),
+            (
+                "changepoint vs fixed_normal",
+                "high_change期",
+                str(normal_high.issue_count),
+                str(normal_high.ranking_difference_count),
+                f"{normal_high.ranking_difference_proportion:.2%}",
+            ),
+            (
+                "changepoint vs fixed_high",
+                "全部外层期",
+                str(high_all.issue_count),
+                str(high_all.ranking_difference_count),
+                f"{high_all.ranking_difference_proportion:.2%}",
+            ),
+            (
+                "changepoint vs fixed_high",
+                "normal期",
+                str(high_normal.issue_count),
+                str(high_normal.ranking_difference_count),
+                f"{high_normal.ranking_difference_proportion:.2%}",
+            ),
+        ),
+    )
     state_rows = list(_state_rows(result, metrics))
     state_table = _markdown_table(
-        ("状态", "期数", "占比", "变点Brier", "相对动态", "相对随机", "变点log loss"),
+        (
+            "状态",
+            "期数",
+            "占比",
+            "变点Brier",
+            "相对fixed_normal",
+            "相对fixed_high",
+            "变点log loss",
+        ),
         (
             (
                 str(row["state"]),
                 str(row["issue_count"]),
                 f"{float(cast(str, row['issue_proportion'])):.2%}",
                 str(row["changepoint_brier"]) or "—",
-                str(row["changepoint_brier_delta_vs_dynamic"]) or "—",
-                str(row["changepoint_brier_delta_vs_uniform"]) or "—",
+                str(row["changepoint_brier_delta_vs_fixed_normal"]) or "—",
+                str(row["changepoint_brier_delta_vs_fixed_high"]) or "—",
                 str(row["changepoint_log_loss"]) or "—",
             )
             for row in state_rows
@@ -801,30 +1097,39 @@ def build_report(
 ## 技术摘要
 
 - 本报告仅是 **exploratory development evidence（探索性开发证据）**。旧 final holdout 已被查看，结果不是新的独立 holdout、确认性证据或显著性检验。
-- `{CHANGEPOINT_STRATEGY}` 在 `{period_count}` 个外层开奖期的平均 Brier score 为 `{changepoint_brier[0]:.9f}`；相对 `{DYNAMIC_STRATEGY}` 为 `{brier_vs_dynamic[0]:+.9f}`，相对公平随机概率为 `{brier_vs_uniform[0]:+.9f}`。Brier 越低越好。
-- 平均 Bernoulli log loss 为 `{changepoint_log[0]:.9f}`；相对动态贝叶斯 `{log_vs_dynamic[0]:+.9f}`，相对随机 `{log_vs_uniform[0]:+.9f}`。这些差值的普通均值标准误近似区间未校正时间相关性，只作描述。
-- 共 `{trigger_count}` 期触发 high_change，占 `{trigger_count / period_count:.2%}`；完整80位排名有 `{rank_difference_count}` 期（`{rank_difference_count / period_count:.2%}`）不同于固定 `decay=0.99` 的指数频率。若该计数为零，第二阶段实现按预注册标准视为失败。
+- `{CHANGEPOINT_STRATEGY}` 的唯一新增机制，是用目标期前变化分数在 `{FIXED_NORMAL_STRATEGY}` 与 `{FIXED_HIGH_STRATEGY}` 两个预先固定模型之间切换；两个消融基线完整报告，没有按结果择一。
+- 平均 Brier 为 `{brier_intervals[CHANGEPOINT_STRATEGY][0]:.9f}`，相对 fixed_normal `{brier_vs_normal[0]:+.9f}`、相对 fixed_high `{brier_vs_high[0]:+.9f}`；平均 log loss 为 `{log_intervals[CHANGEPOINT_STRATEGY][0]:.9f}`，相对两基线分别为 `{log_vs_normal[0]:+.9f}` 与 `{log_vs_high[0]:+.9f}`。
+- {ablation_conclusion}
+- 共 `{trigger_count}` 期触发 high_change，占 `{trigger_count / period_count:.2%}`。normal 期自适应概率逐项等于 fixed_normal：`{normal_normal.probabilities_exactly_equal}`；high_change 期逐项等于 fixed_high：`{high_high.probabilities_exactly_equal}`。
 - 变点模型 Top-10 平均命中 `{cp_top10:.6f}`，rolling_frequency 为 `{rolling_top10:.6f}`，期内随机 seed 集成为 `{hits_by_strategy['uniform_random'][:, 9].mean():.6f}`；这些已查看历史上的差异不能证明真实预测能力提高。
 
-## 概率表现未构成确认性优势证据
+## 两个固定消融基线隔离了状态切换的贡献
 
-概率比较以每期开奖期的80维联合评分为单位。负差表示相对基线更低；没有把同一期80个号码、多个 k 或20个随机 seed 当作独立样本。
+概率比较以每期开奖期的80维联合评分为单位。负差表示自适应模型相对基线更低；没有把同一期80个号码、多个 k 或20个随机 seed 当作独立样本。
 
 {probability_table}
 
-逐期 Brier 差值的普通均值标准误近似区间：相对动态贝叶斯 `[{brier_vs_dynamic[2]:+.9f}, {brier_vs_dynamic[3]:+.9f}]`，相对随机 `[{brier_vs_uniform[2]:+.9f}, {brier_vs_uniform[3]:+.9f}]`。逐期 log loss 差值对应区间为 `[{log_vs_dynamic[2]:+.9f}, {log_vs_dynamic[3]:+.9f}]` 和 `[{log_vs_uniform[2]:+.9f}, {log_vs_uniform[3]:+.9f}]`。这些区间未校正潜在时间相关性，不是确认性置信区间或显著性检验。
+{ablation_delta_table}
 
-## 七个策略的 Top-k 历史比较
+这些是逐期开奖差值的普通均值标准误近似区间，未校正潜在时间相关性，只作描述；ECE 是整体校准汇总，未构造伪逐期区间。本报告不计算或报告机会性 p 值。作为上下文，changepoint 相对 dynamic_bayesian 的 Brier/log loss 差值为 `{brier_vs_dynamic[0]:+.9f}`/`{log_vs_dynamic[0]:+.9f}`，相对 uniform_random 为 `{brier_vs_uniform[0]:+.9f}`/`{log_vs_uniform[0]:+.9f}`。
+
+## 九个策略完整 Top-1 至 Top-10 历史比较
 
 `uniform_random` 的20个固定 seed 先在同期开奖期内求均值；其他策略每期只有一个确定性排名。独立统计单位始终是开奖期。
 
 {topk_table}
 
-变点模型完整 Top-1 至 Top-10：
+变点模型相对两个固定消融基线的完整 Top-1 至 Top-10 差值：
 
-{changepoint_topk_table}
+{topk_ablation_table}
 
-## high_change 触发了可审计的自适应路径
+## 真正由状态切换造成的排名差异只出现在相反固定状态
+
+{switch_table}
+
+normal 状态中 changepoint 概率逐项等于 fixed_normal，high_change 状态中逐项等于 fixed_high。与固定 `decay=0.99` 指数频率的旧“100%不同”检查不能隔离状态切换，因为 normal 本身使用 `0.995`、high 本身使用 `0.95` 和120期截断；该数字已从机制有效性判据中删除。现在的检查直接比较两个被切换的固定模型。
+
+## high_change 触发路径及状态内表现可审计
 
 高变化与正常状态的概率表现分开如下；状态是预测前形成的，不使用该期结果。
 
@@ -859,7 +1164,12 @@ change_score_t  = Σ_i |p_recent_i,t - p_reference_i,t|
 
 该分数不证明开奖机制改变，只检测历史频率结构是否偏离；公平彩票的随机波动本身也会制造假变点。
 
-对每个窗口和目标期，阈值是该目标期之前所有可得历史变化分数的固定90%分位数，当前分数不进入自身阈值。`change_score_t > threshold_t` 时使用最近 `{MINIMUM_EFFECTIVE_HISTORY}` 期、`decay={HIGH_CHANGE_DECAY}`；否则保留全部可得历史、`decay={NORMAL_DECAY}`。先验强度固定 `{CHANGEPOINT_PRIOR_STRENGTH:g}`，公平中心 `0.25`：
+两个消融基线不调参、不选优，直接复用同一 posterior grid：
+
+- `{FIXED_NORMAL_STRATEGY}`：始终使用全部目标期前历史、`decay={NORMAL_DECAY}`、`prior_strength={CHANGEPOINT_PRIOR_STRENGTH:g}`。
+- `{FIXED_HIGH_STRATEGY}`：始终使用最近 `{MINIMUM_EFFECTIVE_HISTORY}` 期目标期前历史、`decay={HIGH_CHANGE_DECAY}`、`prior_strength={CHANGEPOINT_PRIOR_STRENGTH:g}`。
+
+对每个窗口和目标期，阈值是该目标期之前所有可得历史变化分数的固定90%分位数，当前分数不进入自身阈值。`change_score_t > threshold_t` 时选择 fixed_high，否则选择 fixed_normal。先验公平中心为 `0.25`：
 
 ```text
 alpha_i,t = 80 × 0.25 + Σ adaptive_weight(age) × y_i
@@ -867,7 +1177,7 @@ beta_i,t  = 80 × 0.75 + Σ adaptive_weight(age) × (1-y_i)
 p_i,t     = alpha_i,t / (alpha_i,t + beta_i,t)
 ```
 
-号码按 `p_i,t` 降序、同分号码升序。自适应衰减与高变化时的120期截断使排序可以不同于固定 decay 指数频率；本次历史中不同排名期数为 `{rank_difference_count}`。
+号码按 `p_i,t` 降序、同分号码升序。changepoint 没有第三套概率公式；它的唯一新增机制是根据目标期前状态在两个固定概率向量之间切换，其价值必须由上面的完整消融比较判断。
 
 ## 嵌套时间验证没有读取外层目标结果
 
@@ -881,9 +1191,10 @@ p_i,t     = alpha_i,t / (alpha_i,t + beta_i,t)
 - **旧 holdout 已查看。** 全部历史结果只能称为 exploratory development evidence。
 - **没有真实预测提升主张。** 如果彩票公平且独立，任何历史模型都不应有稳定优势；正负差异都可能是随机波动。
 - **变化分数会误报。** 90%历史分位数按设计会在稳定随机序列中产生部分 high_change；触发不是机制变化的证据。
+- **消融结论仍是探索性的。** 即使 changepoint 优于某个固定基线，也只能称为历史探索性消融结果；{ablation_conclusion}
 - **窗口仍经过历史开发比较。** 虽然只在外层前的内层 Brier 上从三个预注册窗口选择，研究者自由度和历史选择偏差仍存在。
 - **区间仅描述。** 普通均值标准误近似未校正时间相关性，也未进行多重比较校正。
-- **排名差异不等于优势。** 排名改变只证明自适应机制不是固定指数频率的重命名，不证明改变方向有用。
+- **排名差异不等于优势。** 相对两个固定状态的排名改变只证明切换实际改变了输出，不证明改变方向有用。
 - **确认必须面向未来。** 真正确认需要在模型和输出契约冻结后，依靠未来、预先封存且未被开发查看的开奖。
 
 ## 后续步骤
@@ -925,8 +1236,7 @@ def execute_backtest(
     topk_hits = calculate_topk_hits(result)
     calibrations = calculate_calibration(result)
     intervals = find_trigger_intervals(result)
-    if not bool(result.ranking_differs_from_fixed_exponential.any()):
-        raise RuntimeError("变点排名从未不同于固定指数频率，第二阶段实现失败")
+    diagnostics = calculate_switch_diagnostics(result)
 
     resolved_output.mkdir(parents=True, exist_ok=True)
     write_issue_probabilities(resolved_output / OUTPUT_FILENAMES[0], result)
@@ -936,6 +1246,7 @@ def execute_backtest(
     write_state_metrics(resolved_output / OUTPUT_FILENAMES[4], result, metrics)
     write_calibration(resolved_output / OUTPUT_FILENAMES[5], calibrations)
     write_trigger_intervals(resolved_output / OUTPUT_FILENAMES[6], intervals)
+    write_switch_diagnostics(resolved_output / OUTPUT_FILENAMES[7], diagnostics)
     report = build_report(
         result,
         config,
@@ -943,6 +1254,7 @@ def execute_backtest(
         topk_hits,
         calibrations,
         intervals,
+        diagnostics,
         data_path=resolved_data,
         project_root=root,
     )
@@ -966,7 +1278,10 @@ def run() -> int:
         "完成："
         f"历史={len(result.issues)}期，外层探索={len(result.outer_indices)}期，"
         f"high_change={int(result.high_change.sum())}期，"
-        f"排名变化={int(result.ranking_differs_from_fixed_exponential.sum())}期，"
+        "相对fixed_normal排名变化="
+        f"{int(result.ranking_differs_from_fixed_normal.sum())}期，"
+        "相对fixed_high排名变化="
+        f"{int(result.ranking_differs_from_fixed_high.sum())}期，"
         "报告=reports/kl8_v2_changepoint_report.md"
     )
     return 0

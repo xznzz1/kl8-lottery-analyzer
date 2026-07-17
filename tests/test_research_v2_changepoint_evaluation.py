@@ -10,6 +10,8 @@ import numpy as np
 from src.research_v2.changepoint import changepoint_beta_bernoulli
 from src.research_v2.changepoint_evaluation import (
     CHANGEPOINT_STRATEGY,
+    FIXED_HIGH_STRATEGY,
+    FIXED_NORMAL_STRATEGY,
     ChangepointEvaluationConfig,
     evaluate_changepoint_walk_forward,
 )
@@ -36,6 +38,13 @@ MANIFEST_NORMALISED_HASH = (
 FREEZE_CONFIG_NORMALISED_HASH = (
     "2c2e8bf33a7be2c11656b3375a7804b3e22a9f2b58ca5bf7fd39ff7aaa92940d"
 )
+PHASE1_V2_HASHES = {
+    "src/research_v2/bayesian.py": "a983d438fb7d9a0d50ff967c3d974f66683964642df0efbd0849f783933b33f2",
+    "src/research_v2/evaluation.py": "ecc85c7557926e9bdc35b5571c3a887ea64d40b98680a0bae95e8dc3828b1b07",
+    "src/research_v2/metrics.py": "3785f3a4800f94b98d28da3b57f4d65e2420c8b119483cea29e23fa6e7867cd3",
+    "scripts/research_v2_backtest.py": "2c3c7b11dc440b0cbcea33da5a430125eb013d26ed8234fe0eb79c6c56f234c0",
+    "reports/kl8_v2_research_report.md": "1c02b21613f9d50a559045a45ad0edaee5a9e5142ced8d684d17f5f74e17e9a3",
+}
 
 
 def _normalised_hash(path: Path) -> str:
@@ -90,6 +99,14 @@ def test_outer_target_and_future_do_not_change_first_prediction_or_threshold() -
     np.testing.assert_array_equal(
         original.posterior_mean[:1], changed.posterior_mean[:1]
     )
+    np.testing.assert_array_equal(
+        original.fixed_normal_posterior_mean[:1],
+        changed.fixed_normal_posterior_mean[:1],
+    )
+    np.testing.assert_array_equal(
+        original.fixed_high_posterior_mean[:1],
+        changed.fixed_high_posterior_mean[:1],
+    )
 
 
 def test_threshold_history_and_inner_selection_end_before_outer_target() -> None:
@@ -127,6 +144,8 @@ def test_clear_frequency_shift_triggers_high_change() -> None:
         config=ChangepointEvaluationConfig(include_comparators=False),
     )
     assert bool(result.high_change[:5].all())
+    assert bool(result.high_change.any())
+    assert bool((~result.high_change).any())
     assert np.all(result.active_decay[:5] == 0.95)
     assert np.all(result.effective_history_length[:5] == 120)
 
@@ -168,10 +187,41 @@ def test_recursive_grid_matches_direct_target_history_calculation() -> None:
     )
 
 
-def test_some_rankings_differ_from_fixed_exponential_frequency() -> None:
-    issues, draws = _rotating_draws(490)
-    result = evaluate_changepoint_walk_forward(issues, draws)
-    assert bool(result.ranking_differs_from_fixed_exponential.any())
+def test_adaptive_probabilities_are_exactly_the_selected_fixed_grid() -> None:
+    issues, draws = _changed_draws(520)
+    result = evaluate_changepoint_walk_forward(
+        issues,
+        draws,
+        config=ChangepointEvaluationConfig(include_comparators=False),
+    )
+    normal = ~result.high_change
+    high = result.high_change
+    assert bool(normal.any()) and bool(high.any())
+    np.testing.assert_array_equal(
+        result.posterior_mean[normal], result.fixed_normal_posterior_mean[normal]
+    )
+    np.testing.assert_array_equal(
+        result.posterior_mean[high], result.fixed_high_posterior_mean[high]
+    )
+    np.testing.assert_array_equal(
+        result.rankings[CHANGEPOINT_STRATEGY][normal],
+        result.rankings[FIXED_NORMAL_STRATEGY][normal],
+    )
+    np.testing.assert_array_equal(
+        result.rankings[CHANGEPOINT_STRATEGY][high],
+        result.rankings[FIXED_HIGH_STRATEGY][high],
+    )
+
+
+def test_state_switch_changes_rankings_against_the_opposite_fixed_grid() -> None:
+    issues, draws = _changed_draws(520)
+    result = evaluate_changepoint_walk_forward(
+        issues,
+        draws,
+        config=ChangepointEvaluationConfig(include_comparators=False),
+    )
+    assert bool(result.ranking_differs_from_fixed_normal[result.high_change].any())
+    assert bool(result.ranking_differs_from_fixed_high[~result.high_change].any())
 
 
 def test_phase1_dynamic_bayesian_behavior_is_unchanged() -> None:
@@ -217,3 +267,6 @@ def test_v1_sources_freeze_config_and_manifest_are_unchanged() -> None:
         _normalised_hash(ROOT / "reports/prospective_manifests/2026188.json")
         == MANIFEST_NORMALISED_HASH
     )
+    assert {
+        relative: _normalised_hash(ROOT / relative) for relative in PHASE1_V2_HASHES
+    } == PHASE1_V2_HASHES

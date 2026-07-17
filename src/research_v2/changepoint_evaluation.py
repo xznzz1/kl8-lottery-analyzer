@@ -34,6 +34,8 @@ IntArray = NDArray[np.int64]
 BoolArray = NDArray[np.bool_]
 
 CHANGEPOINT_STRATEGY = "changepoint_bayesian"
+FIXED_NORMAL_STRATEGY = "fixed_normal_bayesian"
+FIXED_HIGH_STRATEGY = "fixed_high_bayesian"
 PHASE2_COMPARATOR_STRATEGIES = (
     "uniform_random",
     "rolling_frequency",
@@ -41,6 +43,8 @@ PHASE2_COMPARATOR_STRATEGIES = (
     "hybrid",
     "repository_advanced",
     DYNAMIC_STRATEGY,
+    FIXED_NORMAL_STRATEGY,
+    FIXED_HIGH_STRATEGY,
     CHANGEPOINT_STRATEGY,
 )
 
@@ -89,6 +93,8 @@ class ChangepointEvaluationResult:
     posterior_variance: FloatArray
     credible_interval_lower: FloatArray
     credible_interval_upper: FloatArray
+    fixed_normal_posterior_mean: FloatArray
+    fixed_high_posterior_mean: FloatArray
     high_change: BoolArray
     active_decay: FloatArray
     effective_history_length: IntArray
@@ -127,15 +133,29 @@ class ChangepointEvaluationResult:
         return self.parameters[index]
 
     @property
-    def ranking_differs_from_fixed_exponential(self) -> BoolArray:
-        """逐期标记完整80位排名是否不同于固定0.99指数频率。"""
+    def ranking_differs_from_fixed_normal(self) -> BoolArray:
+        """逐期标记自适应排名是否不同于始终 normal 的消融基线。"""
 
-        exponential = self.rankings.get("exponential_frequency")
-        if exponential is None:
-            raise ValueError("未计算exponential_frequency比较排名")
         return cast(
             BoolArray,
-            np.any(self.rankings[CHANGEPOINT_STRATEGY] != exponential, axis=1),
+            np.any(
+                self.rankings[CHANGEPOINT_STRATEGY]
+                != self.rankings[FIXED_NORMAL_STRATEGY],
+                axis=1,
+            ),
+        )
+
+    @property
+    def ranking_differs_from_fixed_high(self) -> BoolArray:
+        """逐期标记自适应排名是否不同于始终 high 的消融基线。"""
+
+        return cast(
+            BoolArray,
+            np.any(
+                self.rankings[CHANGEPOINT_STRATEGY]
+                != self.rankings[FIXED_HIGH_STRATEGY],
+                axis=1,
+            ),
         )
 
 
@@ -364,18 +384,37 @@ def evaluate_changepoint_walk_forward(
     )
     variance, lower, upper = _posterior_uncertainty(alpha, beta_values)
 
+    outer = phase1.outer_indices
+    fixed_normal_means = adaptive_grid.normal_mean[outer].copy()
+    fixed_high_means = adaptive_grid.high_mean[outer].copy()
+    normal_mask = np.logical_not(high_change)
+    if not np.array_equal(means[normal_mask], fixed_normal_means[normal_mask]):
+        raise FloatingPointError("normal状态未逐项复用fixed_normal后验")
+    if not np.array_equal(means[high_change], fixed_high_means[high_change]):
+        raise FloatingPointError("high_change状态未逐项复用fixed_high后验")
+
     rankings: dict[str, IntArray] = {
         DYNAMIC_STRATEGY: phase1.rankings[DYNAMIC_STRATEGY],
+        FIXED_NORMAL_STRATEGY: np.vstack(
+            [rank_probabilities(probabilities) for probabilities in fixed_normal_means]
+        ).astype(np.int64),
+        FIXED_HIGH_STRATEGY: np.vstack(
+            [rank_probabilities(probabilities) for probabilities in fixed_high_means]
+        ).astype(np.int64),
         CHANGEPOINT_STRATEGY: np.vstack(
             [rank_probabilities(probabilities) for probabilities in means]
         ).astype(np.int64),
     }
     if settings.include_comparators:
         for strategy in PHASE2_COMPARATOR_STRATEGIES:
-            if strategy not in ("uniform_random", CHANGEPOINT_STRATEGY):
+            if strategy not in (
+                "uniform_random",
+                CHANGEPOINT_STRATEGY,
+                FIXED_NORMAL_STRATEGY,
+                FIXED_HIGH_STRATEGY,
+            ):
                 rankings[strategy] = phase1.rankings[strategy]
 
-    outer = phase1.outer_indices
     candidate_scores = scores[:, outer].T
     candidate_thresholds = thresholds[:, outer].T
     candidate_high = high_grid[:, outer].T
@@ -401,6 +440,8 @@ def evaluate_changepoint_walk_forward(
         posterior_variance=variance,
         credible_interval_lower=lower,
         credible_interval_upper=upper,
+        fixed_normal_posterior_mean=fixed_normal_means,
+        fixed_high_posterior_mean=fixed_high_means,
         high_change=high_change,
         active_decay=active_decay,
         effective_history_length=effective_history,
@@ -410,6 +451,8 @@ def evaluate_changepoint_walk_forward(
 
 __all__ = [
     "CHANGEPOINT_STRATEGY",
+    "FIXED_HIGH_STRATEGY",
+    "FIXED_NORMAL_STRATEGY",
     "PHASE2_COMPARATOR_STRATEGIES",
     "ChangepointEvaluationConfig",
     "ChangepointEvaluationResult",

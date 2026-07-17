@@ -24,6 +24,11 @@ V1_PATHS = (
     "src/scientific/strategies.py",
     "config/scientific_freeze.json",
     "reports/prospective_manifests/2026188.json",
+    "src/research_v2/bayesian.py",
+    "src/research_v2/evaluation.py",
+    "src/research_v2/metrics.py",
+    "scripts/research_v2_backtest.py",
+    "reports/kl8_v2_research_report.md",
 )
 
 
@@ -67,11 +72,12 @@ def test_output_csv_fields_and_row_counts(tmp_path: Path) -> None:
     _, output_dir, report_path = _execute(tmp_path)
     expected_counts = {
         "issue_probabilities.csv": 80,
-        "issue_metrics.csv": 3,
-        "topk_metrics.csv": 70,
+        "issue_metrics.csv": 5,
+        "topk_metrics.csv": 90,
         "changepoint_history.csv": 3,
         "state_metrics.csv": 2,
-        "calibration.csv": 30,
+        "calibration.csv": 50,
+        "switch_diagnostics.csv": 6,
     }
     for filename, expected in expected_counts.items():
         fields, rows = _read_csv(output_dir / filename)
@@ -88,6 +94,9 @@ def test_output_csv_fields_and_row_counts(tmp_path: Path) -> None:
     probability_fields, _ = _read_csv(output_dir / "issue_probabilities.csv")
     assert {
         "posterior_mean",
+        "fixed_normal_posterior_mean",
+        "fixed_high_posterior_mean",
+        "equals_active_fixed_probability",
         "change_score",
         "change_threshold",
         "high_change",
@@ -114,14 +123,16 @@ def test_report_values_match_machine_readable_summaries(tmp_path: Path) -> None:
     changepoint = [
         row for row in issue_rows if row["strategy"] == "changepoint_bayesian"
     ]
-    dynamic = [row for row in issue_rows if row["strategy"] == "dynamic_bayesian"]
-    uniform = [row for row in issue_rows if row["strategy"] == "uniform_random"]
+    fixed_normal = [
+        row for row in issue_rows if row["strategy"] == "fixed_normal_bayesian"
+    ]
+    fixed_high = [row for row in issue_rows if row["strategy"] == "fixed_high_bayesian"]
     expected_brier = float(np.mean([float(row["brier_score"]) for row in changepoint]))
-    expected_vs_dynamic = expected_brier - float(
-        np.mean([float(row["brier_score"]) for row in dynamic])
+    expected_vs_normal = expected_brier - float(
+        np.mean([float(row["brier_score"]) for row in fixed_normal])
     )
-    expected_vs_uniform = expected_brier - float(
-        np.mean([float(row["brier_score"]) for row in uniform])
+    expected_vs_high = expected_brier - float(
+        np.mean([float(row["brier_score"]) for row in fixed_high])
     )
     _, topk_rows = _read_csv(output_dir / "topk_metrics.csv")
     top10 = [
@@ -131,9 +142,50 @@ def test_report_values_match_machine_readable_summaries(tmp_path: Path) -> None:
     ]
     report = report_path.read_text(encoding="utf-8")
     assert f"{expected_brier:.9f}" in report
-    assert f"{expected_vs_dynamic:+.9f}" in report
-    assert f"{expected_vs_uniform:+.9f}" in report
+    assert f"{expected_vs_normal:+.9f}" in report
+    assert f"{expected_vs_high:+.9f}" in report
     assert f"{np.mean(top10):.6f}" in report
+
+
+def test_switch_csv_and_report_summaries_are_consistent(tmp_path: Path) -> None:
+    _, output_dir, report_path = _execute(tmp_path)
+    _, rows = _read_csv(output_dir / "switch_diagnostics.csv")
+    lookup = {(row["comparator"], row["scope"]): row for row in rows}
+    normal_all = lookup[("fixed_normal_bayesian", "all")]
+    normal_high = lookup[("fixed_normal_bayesian", "high_change")]
+    high_all = lookup[("fixed_high_bayesian", "all")]
+    high_normal = lookup[("fixed_high_bayesian", "normal")]
+    report = report_path.read_text(encoding="utf-8")
+    for row in (normal_all, normal_high, high_all, high_normal):
+        assert row["ranking_difference_count"] in report
+        assert f"{float(row['ranking_difference_proportion']):.2%}" in report
+    assert (
+        lookup[("fixed_normal_bayesian", "normal")]["probabilities_exactly_equal"]
+        == "True"
+    )
+    assert (
+        lookup[("fixed_high_bayesian", "high_change")]["probabilities_exactly_equal"]
+        == "True"
+    )
+
+
+def test_all_five_probability_models_and_nine_topk_strategies_are_reported(
+    tmp_path: Path,
+) -> None:
+    _, output_dir, report_path = _execute(tmp_path)
+    _, issue_rows = _read_csv(output_dir / "issue_metrics.csv")
+    _, topk_rows = _read_csv(output_dir / "topk_metrics.csv")
+    assert {row["strategy"] for row in issue_rows} == set(
+        backtest.PROBABILITY_STRATEGIES
+    )
+    assert {row["strategy"] for row in topk_rows} == set(
+        backtest.PHASE2_COMPARATOR_STRATEGIES
+    )
+    report = report_path.read_text(encoding="utf-8")
+    for strategy in backtest.PROBABILITY_STRATEGIES:
+        assert strategy in report
+    for strategy in backtest.PHASE2_COMPARATOR_STRATEGIES:
+        assert strategy in report
 
 
 def test_tmp_execution_never_reads_real_data_cache(
