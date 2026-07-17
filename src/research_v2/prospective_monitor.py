@@ -1,8 +1,8 @@
-"""快乐8 v2 冻结模型的未来前瞻封存与逐期评价基础设施。
+"""快乐8 v2 冻结模型的未来前瞻封存、评价和正式汇总基础设施。
 
-本模块只编排已经合并的第一、第二阶段模型，不重新定义或调整模型参数。
-每个 manifest 只使用目标期之前的数据；开奖后评价只读取已封存 manifest 中的
-概率，绝不重新预测或覆盖既有记录。
+模块只编排已合并的第一、第二阶段模型。生产状态机严格区分本地生成、GitHub
+远程合并封存和开奖后评价；任何缺失、漂移、网络失败或顺序链断裂都必须
+fail closed，且不得覆盖既有 manifest 或评价。
 """
 
 from __future__ import annotations
@@ -10,18 +10,19 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, Callable, Mapping, Protocol, Sequence, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import ttest_1samp
 
-from .bayesian import DRAW_SIZE, FAIR_PROBABILITY, NUMBER_COUNT, candidate_sets
+from .bayesian import DRAW_SIZE, FAIR_PROBABILITY, NUMBER_COUNT
 from .changepoint import (
     CHANGE_QUANTILE,
     CHANGEPOINT_PRIOR_STRENGTH,
@@ -44,15 +45,27 @@ from .evaluation import (
     MINIMUM_INNER_OBSERVATIONS,
     validate_issue_draws,
 )
-from .metrics import bernoulli_log_loss, brier_score, top_k_hits
+from .metrics import bernoulli_log_loss, brier_score, calibration_summary, top_k_hits
 
 FloatArray = NDArray[np.float64]
 IntArray = NDArray[np.int64]
 
-SCHEMA_VERSION = 1
-EVIDENCE_STATUS = "prospective_presealed_research"
+SCHEMA_VERSION = 2
+FREEZE_ID = "kl8-v2-prospective-365-v1"
+FREEZE_PENDING = "research_model_and_protocol_frozen_pending_code_audit"
+FREEZE_ACTIVE = "active"
+FREEZE_TAG = "kl8-v2-prospective-365-v1"
+GITHUB_REPOSITORY = "xznzz1/kl8-lottery-analyzer"
+GITHUB_BASE_BRANCH = "scientific-model"
+MANIFEST_EVIDENCE_STATUS = "prospective_manifest_pending_remote_seal"
+EVALUATION_EVIDENCE_STATUS = "prospective_presealed_research"
+SUMMARY_EVIDENCE_STATUS = "completed_prospective_confirmation_summary"
 CONFIRMATION_ISSUE_COUNT = 365
 UNIFORM_STRATEGY = "uniform_random"
+UNIFORM_BASE_SEEDS = tuple(range(202601, 202621))
+BOOTSTRAP_BLOCK_LENGTH = 30
+BOOTSTRAP_RESAMPLE_COUNT = 20_000
+BOOTSTRAP_SEED = 20_260_717
 PROBABILITY_STRATEGIES = (
     UNIFORM_STRATEGY,
     DYNAMIC_STRATEGY,
@@ -66,20 +79,47 @@ PRIMARY_COMPARISON_MODELS = (
     FIXED_HIGH_STRATEGY,
     CHANGEPOINT_STRATEGY,
 )
+PRIMARY_COMPARISONS = (
+    "dynamic_bayesian_minus_uniform_random",
+    "fixed_normal_bayesian_minus_uniform_random",
+    "fixed_high_bayesian_minus_uniform_random",
+    "changepoint_bayesian_minus_uniform_random",
+)
+SECONDARY_METRICS = (
+    "mean_brier_all_five_models",
+    "mean_bernoulli_log_loss_all_five_models",
+    "fixed_10_bin_calibration_and_ece",
+    "mean_top_1_through_top_10_hits_all_five_models",
+    "uniform_20_seed_within_issue_mean_top_k",
+    "changepoint_minus_fixed_normal_brier_and_log_loss",
+    "changepoint_minus_fixed_high_brier_and_log_loss",
+    "high_change_trigger_count_and_proportion",
+    "per_issue_index_and_manifest_sha256",
+)
 MANIFEST_RELATIVE_DIR = Path("reports/research_v2_prospective_manifests")
 RESULT_RELATIVE_DIR = Path("results/research_v2_prospective")
 FREEZE_RELATIVE_PATH = Path("config/research_v2_prospective_freeze.json")
 DATA_RELATIVE_PATH = Path("data_cache/kl8/data.csv")
+FROZEN_SOURCE_PATHS = (
+    "scripts/research_v2_prospective.py",
+    "src/research_v2/bayesian.py",
+    "src/research_v2/changepoint.py",
+    "src/research_v2/changepoint_evaluation.py",
+    "src/research_v2/evaluation.py",
+    "src/research_v2/metrics.py",
+    "src/research_v2/prospective_monitor.py",
+)
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 @dataclass(frozen=True)
 class ProspectivePrediction:
-    """五个冻结模型在一个目标期的目标期前预测。"""
+    """五个冻结模型在一个未开奖目标期的目标期前预测。"""
 
     probabilities: dict[str, FloatArray]
     rankings: dict[str, IntArray]
+    uniform_rankings: tuple[IntArray, ...]
     dynamic_decay: float
     dynamic_prior_strength: float
     changepoint_recent_window: int
@@ -88,6 +128,62 @@ class ProspectivePrediction:
     changepoint_high_change: bool
     changepoint_active_decay: float
     changepoint_effective_history_length: int
+
+
+@dataclass(frozen=True)
+class ChainPosition:
+    """下一份 manifest 在不可选择顺序链中的位置。"""
+
+    confirmation_index: int
+    protocol_start_target_issue: int
+    previous_target_issue: int | None
+    previous_manifest_sha256: str | None
+
+
+@dataclass(frozen=True)
+class ManifestChainEntry:
+    """一份已经落盘并通过顺序链校验的 manifest。"""
+
+    path: Path
+    payload: dict[str, Any]
+    sha256: str
+    confirmation_index: int
+    target_issue: int
+
+
+@dataclass(frozen=True)
+class RemoteSealEvidence:
+    """通过 GitHub API 验证的远程合并封存证据。"""
+
+    seal_pr_number: int
+    seal_pr_url: str
+    seal_merge_commit_sha: str
+    seal_merged_at_utc: str
+    manifest_sha256_at_merge: str
+
+
+@dataclass(frozen=True)
+class BootstrapInference:
+    """固定循环移动分块 bootstrap 的单项主要比较结果。"""
+
+    observed_mean: float
+    ordinary_standard_error: float
+    interval_lower: float
+    interval_upper: float
+    raw_p_value: float
+
+
+class GitHubSealClient(Protocol):
+    """远程封存验证所需的最小、可 mock GitHub API 接口。"""
+
+    def get_pull_request(
+        self, repository: str, pr_number: int
+    ) -> Mapping[str, object]: ...
+
+    def get_file_bytes(self, repository: str, path: str, commit_sha: str) -> bytes: ...
+
+
+GitCommand = Callable[[Sequence[str]], str]
 
 
 def normalized_lf_sha256(path: Path) -> str:
@@ -127,6 +223,14 @@ def canonical_json_bytes(payload: Mapping[str, object]) -> bytes:
         allow_nan=False,
     )
     return (rendered + "\n").encode("utf-8")
+
+
+def configuration_fingerprint(config: Mapping[str, object]) -> str:
+    """计算排除自哈希字段后的完整冻结配置 SHA-256。"""
+
+    copied = dict(config)
+    copied.pop("configuration_sha256", None)
+    return hashlib.sha256(canonical_json_bytes(copied)).hexdigest()
 
 
 def _load_json_object(path: Path) -> dict[str, Any]:
@@ -216,122 +320,153 @@ def load_history_csv(path: Path) -> tuple[IntArray, IntArray]:
     return validate_issue_draws(issues, draws)
 
 
+def _expected_models() -> dict[str, object]:
+    return {
+        UNIFORM_STRATEGY: {
+            "base_seeds": list(UNIFORM_BASE_SEEDS),
+            "probability": FAIR_PROBABILITY,
+            "ranking_method": "sha256_seeded_numpy_permutation",
+            "seed_material_format": (
+                "kl8-v2-prospective-365-v1|<target_issue>|<base_seed>"
+            ),
+            "seed_integer_derivation": "sha256_first_8_bytes_unsigned_big_endian",
+            "top_k_aggregation": "within_issue_mean_over_20_seeds",
+        },
+        DYNAMIC_STRATEGY: {
+            "decay_grid": [0.97, 0.99, 0.995],
+            "minimum_initial_history": MINIMUM_INITIAL_HISTORY,
+            "minimum_inner_observations": MINIMUM_INNER_OBSERVATIONS,
+            "parameter_selection": (
+                "target_prior_inner_mean_brier_argmin_preregistered_grid_order_tiebreak"
+            ),
+            "prior_strength_grid": [5.0, 20.0, 80.0],
+        },
+        FIXED_NORMAL_STRATEGY: {
+            "decay": NORMAL_DECAY,
+            "history": "all_target_prior_history",
+            "prior_strength": CHANGEPOINT_PRIOR_STRENGTH,
+        },
+        FIXED_HIGH_STRATEGY: {
+            "decay": HIGH_CHANGE_DECAY,
+            "history": f"last_{MINIMUM_EFFECTIVE_HISTORY}_target_prior_issues",
+            "prior_strength": CHANGEPOINT_PRIOR_STRENGTH,
+        },
+        CHANGEPOINT_STRATEGY: {
+            "change_quantile": CHANGE_QUANTILE,
+            "fixed_high_model": FIXED_HIGH_STRATEGY,
+            "fixed_normal_model": FIXED_NORMAL_STRATEGY,
+            "minimum_effective_history": MINIMUM_EFFECTIVE_HISTORY,
+            "recent_window_grid": list(RECENT_WINDOW_GRID),
+            "reference_window": REFERENCE_WINDOW,
+            "selection_metric": "inner_mean_brier",
+            "threshold_training": "target_prior_change_scores_only",
+        },
+    }
+
+
 def _validate_freeze_contract(config: Mapping[str, Any]) -> None:
+    expected_top_level = {
+        "schema_version",
+        "freeze_id",
+        "freeze_status",
+        "freeze_tag",
+        "configuration_sha256",
+        "evidence_status",
+        "confirmation_issue_count",
+        "github",
+        "models",
+        "confirmation_protocol",
+        "manifest_policy",
+        "evaluation_policy",
+        "claim_boundary",
+        "source_manifest",
+    }
+    if set(config) != expected_top_level:
+        raise ValueError("v2前瞻冻结配置顶层字段漂移")
     if config.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("v2前瞻冻结配置schema_version不受支持")
-    if config.get("evidence_status") != EVIDENCE_STATUS:
-        raise ValueError("v2前瞻证据状态不是预注册值")
+    if config.get("freeze_id") != FREEZE_ID:
+        raise ValueError("freeze_id漂移")
+    if config.get("freeze_status") not in (FREEZE_PENDING, FREEZE_ACTIVE):
+        raise ValueError("freeze_status必须是pending或active")
+    if config.get("freeze_tag") != FREEZE_TAG:
+        raise ValueError("freeze_tag漂移")
+    configured_fingerprint = config.get("configuration_sha256")
+    if (
+        not isinstance(configured_fingerprint, str)
+        or not SHA256_PATTERN.fullmatch(configured_fingerprint)
+        or configured_fingerprint != configuration_fingerprint(config)
+    ):
+        raise ValueError("冻结配置SHA-256不匹配")
+    if config.get("evidence_status") != {
+        "evaluation_verified": EVALUATION_EVIDENCE_STATUS,
+        "manifest_local": MANIFEST_EVIDENCE_STATUS,
+        "summary_completed": SUMMARY_EVIDENCE_STATUS,
+    }:
+        raise ValueError("证据状态契约漂移")
     if config.get("confirmation_issue_count") != CONFIRMATION_ISSUE_COUNT:
         raise ValueError("正式确认期数必须固定为365")
-    models = _require_mapping(config.get("models"), "models")
-    if tuple(sorted(models)) != tuple(sorted(PROBABILITY_STRATEGIES)):
-        raise ValueError("冻结配置必须完整保留五个概率模型")
-    if models[UNIFORM_STRATEGY] != {"probability": FAIR_PROBABILITY}:
-        raise ValueError("uniform_random冻结参数漂移")
-    expected_normal = {
-        "decay": NORMAL_DECAY,
-        "history": "all_target_prior_history",
-        "prior_strength": CHANGEPOINT_PRIOR_STRENGTH,
-    }
-    expected_high = {
-        "decay": HIGH_CHANGE_DECAY,
-        "history": f"last_{MINIMUM_EFFECTIVE_HISTORY}_target_prior_issues",
-        "prior_strength": CHANGEPOINT_PRIOR_STRENGTH,
-    }
-    if models[FIXED_NORMAL_STRATEGY] != expected_normal:
-        raise ValueError("fixed_normal_bayesian冻结参数漂移")
-    if models[FIXED_HIGH_STRATEGY] != expected_high:
-        raise ValueError("fixed_high_bayesian冻结参数漂移")
-    dynamic = _require_mapping(models[DYNAMIC_STRATEGY], DYNAMIC_STRATEGY)
-    if dynamic.get("decay_grid") != [0.97, 0.99, 0.995]:
-        raise ValueError("dynamic_bayesian decay网格漂移")
-    if dynamic.get("prior_strength_grid") != [5.0, 20.0, 80.0]:
-        raise ValueError("dynamic_bayesian prior网格漂移")
-    if dynamic.get("minimum_initial_history") != MINIMUM_INITIAL_HISTORY:
-        raise ValueError("dynamic_bayesian初始历史漂移")
-    if dynamic.get("minimum_inner_observations") != MINIMUM_INNER_OBSERVATIONS:
-        raise ValueError("dynamic_bayesian内层观察数漂移")
-    changepoint = _require_mapping(models[CHANGEPOINT_STRATEGY], CHANGEPOINT_STRATEGY)
-    expected_changepoint = {
-        "change_quantile": CHANGE_QUANTILE,
-        "fixed_high_model": FIXED_HIGH_STRATEGY,
-        "fixed_normal_model": FIXED_NORMAL_STRATEGY,
-        "minimum_effective_history": MINIMUM_EFFECTIVE_HISTORY,
-        "recent_window_grid": list(RECENT_WINDOW_GRID),
-        "reference_window": REFERENCE_WINDOW,
-        "selection_metric": "inner_mean_brier",
-        "threshold_training": "target_prior_change_scores_only",
-    }
-    if changepoint != expected_changepoint:
-        raise ValueError("changepoint_bayesian冻结参数漂移")
+    if config.get("github") != {
+        "base_branch": GITHUB_BASE_BRANCH,
+        "repository": GITHUB_REPOSITORY,
+    }:
+        raise ValueError("GitHub仓库或base分支漂移")
+    if config.get("models") != _expected_models():
+        raise ValueError("五个冻结模型或uniform seed列表漂移")
+
     protocol = _require_mapping(
         config.get("confirmation_protocol"), "confirmation_protocol"
     )
-    expected_primary = [
-        "dynamic_bayesian_minus_uniform_random",
-        "fixed_normal_bayesian_minus_uniform_random",
-        "fixed_high_bayesian_minus_uniform_random",
-        "changepoint_bayesian_minus_uniform_random",
-    ]
-    expected_secondary = [
-        "bernoulli_log_loss",
-        "fixed_bin_calibration_and_ece",
-        "top_1_through_top_10_hits",
-        "changepoint_minus_fixed_normal",
-        "changepoint_minus_fixed_high",
-        "high_change_trigger_proportion",
-    ]
-    expected_multiplicity = {
-        "alternative": "mean_model_minus_uniform_brier_less_than_zero",
-        "comparison_count": 4,
-        "correction": "Holm",
-        "raw_test": "one_sided_paired_issue_level_t_test",
+    expected_protocol = {
+        "bootstrap": {
+            "alternative": "mean_model_minus_uniform_brier_less_than_zero",
+            "block_length": BOOTSTRAP_BLOCK_LENGTH,
+            "method": "circular_moving_block_bootstrap",
+            "resample_count": BOOTSTRAP_RESAMPLE_COUNT,
+            "seed": BOOTSTRAP_SEED,
+        },
+        "early_success_claims_forbidden": True,
+        "early_stopping_forbidden": True,
+        "formal_summary_after_exact_issue_count": CONFIRMATION_ISSUE_COUNT,
+        "issue_is_statistical_unit": True,
+        "model_changes_during_confirmation_forbidden": True,
+        "multiplicity_correction": "Holm",
+        "primary_comparisons": list(PRIMARY_COMPARISONS),
+        "primary_metric": "per_issue_80_dimensional_brier_score",
+        "secondary_metrics": list(SECONDARY_METRICS),
+        "secondary_metrics_are_descriptive": True,
+        "secondary_metrics_cannot_select_models": True,
     }
-    if protocol.get("primary_metric") != "per_issue_80_dimensional_brier_score":
-        raise ValueError("主要指标冻结契约漂移")
-    if protocol.get("primary_comparisons") != expected_primary:
-        raise ValueError("四项主要比较冻结契约漂移")
-    if protocol.get("secondary_metrics") != expected_secondary:
-        raise ValueError("次要指标冻结契约漂移")
-    if protocol.get("multiplicity") != expected_multiplicity:
-        raise ValueError("Holm多重比较冻结契约漂移")
-    if any(
-        protocol.get(key) is not True
-        for key in (
-            "early_success_claims_forbidden",
-            "early_stopping_forbidden",
-            "issue_is_statistical_unit",
-            "model_changes_during_confirmation_forbidden",
-            "secondary_metrics_cannot_select_models",
-        )
-    ):
-        raise ValueError("365期禁止提前停止或改模的冻结契约漂移")
-    if protocol.get("formal_summary_after_exact_issue_count") != (
-        CONFIRMATION_ISSUE_COUNT
-    ):
-        raise ValueError("正式汇总期数冻结契约漂移")
-    manifest_policy = _require_mapping(config.get("manifest_policy"), "manifest_policy")
-    if manifest_policy != {
+    if protocol != expected_protocol:
+        raise ValueError("主要检验、Holm、次要指标或禁止提前停止契约漂移")
+    if config.get("manifest_policy") != {
         "directory": MANIFEST_RELATIVE_DIR.as_posix(),
         "existing_manifest_policy": "refuse_overwrite_rewrite_or_delete",
-        "must_commit_and_push_before_official_result": True,
+        "remote_claim_at_generation": False,
+        "sequence": "immutable_hash_chain_1_to_365",
     }:
-        raise ValueError("manifest防覆盖或预封存策略漂移")
-    evaluation_policy = _require_mapping(
-        config.get("evaluation_policy"), "evaluation_policy"
-    )
-    if evaluation_policy != {
+        raise ValueError("manifest目录、哈希链或防覆盖策略漂移")
+    if config.get("evaluation_policy") != {
         "directory": RESULT_RELATIVE_DIR.as_posix(),
-        "record_format": "one_immutable_json_per_target_issue",
         "duplicate_target_policy": "refuse_overwrite",
+        "record_format": "one_immutable_json_per_target_issue",
+        "remote_verification": "github_merged_pr_fail_closed",
     }:
-        raise ValueError("逐期开奖评价防覆盖策略漂移")
+        raise ValueError("评价目录、防覆盖或远程验证策略漂移")
+    if config.get("claim_boundary") != {
+        "fair_lottery_note": "若彩票公平且独立，历史模型不应存在稳定预测优势。",
+        "historical_v2_status": "exploratory_development_evidence",
+        "prospective_status_before_365": (
+            "ongoing_prospective_presealed_research_no_success_claim"
+        ),
+    }:
+        raise ValueError("claim_boundary漂移")
 
 
 def load_and_verify_freeze_config(
     project_root: Path, config_path: Path
 ) -> dict[str, Any]:
-    """读取冻结配置，并在任何预测或评价前拒绝源码漂移。"""
+    """读取完整冻结契约，并在任何生产操作前拒绝配置或源码漂移。"""
 
     resolved = require_contract_path(
         project_root, config_path, FREEZE_RELATIVE_PATH, "冻结配置路径"
@@ -341,28 +476,63 @@ def load_and_verify_freeze_config(
     source_manifest = _require_mapping(config.get("source_manifest"), "source_manifest")
     if source_manifest.get("algorithm") != "sha256_utf8_normalized_lf":
         raise ValueError("source manifest哈希算法不受支持")
+    if source_manifest.get("change_policy") != (
+        "任一冻结源码变化时拒绝生成manifest、评价或正式汇总；必须建立新的协议版本。"
+    ):
+        raise ValueError("source manifest变更策略漂移")
     files = _require_mapping(source_manifest.get("files"), "source_manifest.files")
-    expected_files: dict[str, str] = {}
-    for raw_relative, raw_digest in files.items():
-        if not isinstance(raw_relative, str) or not isinstance(raw_digest, str):
-            raise ValueError("source manifest路径和哈希必须是字符串")
-        if not SHA256_PATTERN.fullmatch(raw_digest):
-            raise ValueError(f"source manifest含非法SHA-256：{raw_relative}")
-        source_path = resolve_within(project_root, Path(raw_relative), "冻结源码")
+    if set(files) != set(FROZEN_SOURCE_PATHS):
+        raise ValueError("source manifest冻结文件集合漂移")
+    verified: dict[str, str] = {}
+    for relative in FROZEN_SOURCE_PATHS:
+        raw_digest = files.get(relative)
+        if not isinstance(raw_digest, str) or not SHA256_PATTERN.fullmatch(raw_digest):
+            raise ValueError(f"source manifest含非法SHA-256：{relative}")
+        source_path = resolve_within(project_root, Path(relative), "冻结源码")
         if not source_path.is_file():
-            raise ValueError(f"冻结源码不存在：{raw_relative}")
-        actual = normalized_lf_sha256(source_path)
-        if actual != raw_digest:
-            raise ValueError(f"冻结源码漂移，拒绝运行：{raw_relative}")
-        expected_files[raw_relative] = raw_digest
-    fingerprint = source_manifest_fingerprint(expected_files)
-    if source_manifest.get("fingerprint") != fingerprint:
+            raise ValueError(f"冻结源码不存在：{relative}")
+        if normalized_lf_sha256(source_path) != raw_digest:
+            raise ValueError(f"冻结源码漂移，拒绝运行：{relative}")
+        verified[relative] = raw_digest
+    if source_manifest.get("fingerprint") != source_manifest_fingerprint(verified):
         raise ValueError("source manifest总指纹不匹配")
     return config
 
 
+def _default_git_command(project_root: Path, arguments: Sequence[str]) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(project_root), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def require_active_freeze(
+    project_root: Path,
+    config: Mapping[str, Any],
+    *,
+    git_command: GitCommand | None = None,
+) -> None:
+    """pending时拒绝；active时验证冻结标签存在且是当前HEAD祖先。"""
+
+    if config.get("freeze_status") != FREEZE_ACTIVE:
+        raise RuntimeError("冻结配置仍为pending，生产操作全部拒绝运行")
+    command = git_command or (lambda args: _default_git_command(project_root, args))
+    tag = str(config["freeze_tag"])
+    try:
+        tag_commit = command(("rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"))
+        head = command(("rev-parse", "HEAD"))
+        command(("merge-base", "--is-ancestor", tag_commit, head))
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("冻结标签不存在或不是当前HEAD祖先，拒绝运行") from exc
+    if not GIT_SHA_PATTERN.fullmatch(tag_commit) or not GIT_SHA_PATTERN.fullmatch(head):
+        raise RuntimeError("Git返回了非法提交SHA，拒绝运行")
+
+
 def canonical_history_sha256(issues: IntArray, draws: IntArray) -> str:
-    """对目标期前历史形成与CSV行序和号码列顺序无关的规范哈希。"""
+    """对完整目标期前历史形成与行序、号码列顺序无关的规范哈希。"""
 
     issue_values, draw_values = validate_issue_draws(issues, draws)
     lines = []
@@ -372,34 +542,52 @@ def canonical_history_sha256(issues: IntArray, draws: IntArray) -> str:
     return hashlib.sha256("".join(lines).encode("ascii")).hexdigest()
 
 
-def _target_prior_history(
+def validate_unpublished_target(
     issues: IntArray, draws: IntArray, target_issue: int
 ) -> tuple[IntArray, IntArray]:
+    """要求输入完整截止于最新开奖，且目标期严格尚未出现在数据中。"""
+
     issue_values, draw_values = validate_issue_draws(issues, draws)
     if target_issue <= 0:
         raise ValueError("目标期号必须为正整数")
-    mask = issue_values < target_issue
-    historical_issues = issue_values[mask]
-    historical_draws = draw_values[mask]
+    if np.any(issue_values == target_issue):
+        raise ValueError("target_issue已经存在于输入数据，拒绝生成manifest")
+    if np.any(issue_values > target_issue):
+        raise ValueError("输入数据包含晚于target_issue的记录")
+    latest_issue = int(issue_values[-1])
+    if target_issue <= latest_issue:
+        raise ValueError("target_issue必须严格晚于最新已开奖期")
     required = MINIMUM_INITIAL_HISTORY + MINIMUM_INNER_OBSERVATIONS
-    if len(historical_issues) < required:
+    if len(issue_values) < required:
         raise ValueError(f"目标期前至少需要{required}期历史")
-    if len(historical_issues) == 0 or int(historical_issues[-1]) >= target_issue:
-        raise ValueError("历史截止期必须早于目标期")
-    return historical_issues, historical_draws
+    return issue_values, draw_values
+
+
+def _uniform_seed_material(target_issue: int, base_seed: int) -> bytes:
+    return f"{FREEZE_ID}|{target_issue}|{base_seed}".encode("ascii")
+
+
+def uniform_seed_rankings(target_issue: int) -> tuple[IntArray, ...]:
+    """按20个预注册seed生成目标期特定、完全可复现的随机排列。"""
+
+    rankings: list[IntArray] = []
+    numbers = np.arange(1, NUMBER_COUNT + 1, dtype=np.int64)
+    for base_seed in UNIFORM_BASE_SEEDS:
+        digest = hashlib.sha256(
+            _uniform_seed_material(target_issue, base_seed)
+        ).digest()
+        seed_integer = int.from_bytes(digest[:8], byteorder="big", signed=False)
+        rng = np.random.default_rng(seed_integer)
+        rankings.append(cast(IntArray, rng.permutation(numbers)))
+    return tuple(rankings)
 
 
 def predict_frozen_models(
     issues: IntArray, draws: IntArray, *, target_issue: int
 ) -> ProspectivePrediction:
-    """严格复用已合并 v2 实现，形成五个冻结模型的目标期前预测。
+    """严格复用已合并 v2 实现，形成未开奖目标期的五模型预测。"""
 
-    为调用现有 walk-forward 公共接口，函数在目标位置放入一个确定性哨兵票面；
-    既有实现先预测、后吸收当前结果，因此哨兵内容不会影响当前预测。测试同时
-    验证目标期和未来结果改变时输出不变。
-    """
-
-    historical_issues, historical_draws = _target_prior_history(
+    historical_issues, historical_draws = validate_unpublished_target(
         issues, draws, target_issue
     )
     sentinel_draw = np.arange(1, DRAW_SIZE + 1, dtype=np.int64)
@@ -420,34 +608,33 @@ def predict_frozen_models(
     offset = len(result.outer_indices) - 1
     phase1_parameters = result.phase1_result.selected_parameters(offset)
     changepoint_parameters = result.selected_parameters(offset)
-    uniform = np.full(NUMBER_COUNT, FAIR_PROBABILITY, dtype=np.float64)
     probabilities: dict[str, FloatArray] = {
-        UNIFORM_STRATEGY: uniform,
+        UNIFORM_STRATEGY: np.full(NUMBER_COUNT, FAIR_PROBABILITY, dtype=np.float64),
         DYNAMIC_STRATEGY: result.phase1_result.posterior_mean[offset].copy(),
         FIXED_NORMAL_STRATEGY: result.fixed_normal_posterior_mean[offset].copy(),
         FIXED_HIGH_STRATEGY: result.fixed_high_posterior_mean[offset].copy(),
         CHANGEPOINT_STRATEGY: result.posterior_mean[offset].copy(),
     }
     rankings: dict[str, IntArray] = {
-        UNIFORM_STRATEGY: np.arange(1, NUMBER_COUNT + 1, dtype=np.int64),
         DYNAMIC_STRATEGY: result.rankings[DYNAMIC_STRATEGY][offset].copy(),
         FIXED_NORMAL_STRATEGY: result.rankings[FIXED_NORMAL_STRATEGY][offset].copy(),
         FIXED_HIGH_STRATEGY: result.rankings[FIXED_HIGH_STRATEGY][offset].copy(),
         CHANGEPOINT_STRATEGY: result.rankings[CHANGEPOINT_STRATEGY][offset].copy(),
     }
-    for strategy in PROBABILITY_STRATEGIES:
-        model_probabilities = probabilities[strategy]
+    for strategy, model_probabilities in probabilities.items():
         if model_probabilities.shape != (NUMBER_COUNT,) or not np.all(
             (model_probabilities > 0.0) & (model_probabilities < 1.0)
         ):
             raise FloatingPointError(f"{strategy}概率不严格位于(0,1)")
         if not np.isclose(model_probabilities.sum(), DRAW_SIZE, rtol=0.0, atol=1e-9):
             raise FloatingPointError(f"{strategy}的80个概率之和不等于20")
-        if set(map(int, rankings[strategy])) != set(range(1, NUMBER_COUNT + 1)):
+    for strategy, ranking in rankings.items():
+        if set(map(int, ranking)) != set(range(1, NUMBER_COUNT + 1)):
             raise FloatingPointError(f"{strategy}排名不是1至80完整排列")
     return ProspectivePrediction(
         probabilities=probabilities,
         rankings=rankings,
+        uniform_rankings=uniform_seed_rankings(target_issue),
         dynamic_decay=phase1_parameters.decay,
         dynamic_prior_strength=phase1_parameters.prior_strength,
         changepoint_recent_window=changepoint_parameters.recent_window,
@@ -473,25 +660,163 @@ def _relative_posix(project_root: Path, path: Path) -> str:
     return path.resolve().relative_to(project_root.resolve()).as_posix()
 
 
+def _top_k_candidates(ranking: IntArray) -> dict[str, list[int]]:
+    return {str(k): list(map(int, ranking[:k])) for k in range(1, 11)}
+
+
+def _load_manifest_chain(
+    manifest_dir: Path, config: Mapping[str, Any]
+) -> tuple[ManifestChainEntry, ...]:
+    unsorted_paths = list(manifest_dir.glob("*.json")) if manifest_dir.exists() else []
+    indexed_paths: list[tuple[int, Path]] = []
+    for path in unsorted_paths:
+        payload = _load_json_object(path)
+        index = payload.get("confirmation_index")
+        if not isinstance(index, int):
+            raise ValueError("manifest confirmation_index非法")
+        indexed_paths.append((index, path))
+    paths = [path for _, path in sorted(indexed_paths, key=lambda item: item[0])]
+    entries: list[ManifestChainEntry] = []
+    expected_start: int | None = None
+    previous_target: int | None = None
+    previous_digest: str | None = None
+    for expected_index, path in enumerate(paths, start=1):
+        payload = _load_json_object(path)
+        index = payload.get("confirmation_index")
+        target = payload.get("target_issue")
+        if index != expected_index:
+            raise ValueError("manifest confirmation_index不连续")
+        if not isinstance(target, int) or target <= 0 or path.stem != str(target):
+            raise ValueError("manifest文件名与target_issue不一致")
+        if payload.get("freeze_id") != config.get("freeze_id"):
+            raise ValueError("manifest freeze_id不匹配")
+        if payload.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError("manifest schema_version不匹配")
+        if payload.get("evidence_status") != MANIFEST_EVIDENCE_STATUS:
+            raise ValueError("manifest本地证据状态不匹配")
+        if payload.get("remote_preseal_verified") is not False:
+            raise ValueError("manifest不得自行声称远程封存")
+        if payload.get("freeze_config_sha256") != config.get("configuration_sha256"):
+            raise ValueError("manifest冻结配置SHA-256不匹配")
+        if payload.get("source_manifest") != config.get("source_manifest"):
+            raise ValueError("manifest source manifest与冻结配置不一致")
+        if payload.get("frozen_parameters") != config.get("models"):
+            raise ValueError("manifest五模型冻结参数与配置不一致")
+        start = payload.get("protocol_start_target_issue")
+        if expected_index == 1:
+            expected_start = target
+            if start != target:
+                raise ValueError("首期protocol_start_target_issue必须等于target_issue")
+            if payload.get("previous_target_issue") is not None:
+                raise ValueError("首期previous_target_issue必须为null")
+            if payload.get("previous_manifest_sha256") is not None:
+                raise ValueError("首期previous_manifest_sha256必须为null")
+        else:
+            if start != expected_start:
+                raise ValueError("protocol_start_target_issue发生漂移")
+            if payload.get("previous_target_issue") != previous_target:
+                raise ValueError("manifest previous_target_issue链断裂")
+            if payload.get("previous_manifest_sha256") != previous_digest:
+                raise ValueError("manifest SHA-256链断裂")
+            if previous_target is not None and target <= previous_target:
+                raise ValueError("manifest target_issue必须严格递增")
+        digest = raw_sha256(path)
+        entries.append(
+            ManifestChainEntry(
+                path=path,
+                payload=payload,
+                sha256=digest,
+                confirmation_index=expected_index,
+                target_issue=target,
+            )
+        )
+        previous_target = target
+        previous_digest = digest
+    return tuple(entries)
+
+
+def _validate_prior_evaluations(
+    entries: Sequence[ManifestChainEntry], results_dir: Path
+) -> None:
+    paths = sorted(results_dir.glob("*.json")) if results_dir.exists() else []
+    expected_names = {f"{entry.target_issue}.json" for entry in entries}
+    if {path.name for path in paths} != expected_names:
+        raise ValueError("既有manifest与evaluation不一一对应，禁止继续")
+    by_target = {entry.target_issue: entry for entry in entries}
+    for path in paths:
+        record = _load_json_object(path)
+        target = record.get("target_issue")
+        if not isinstance(target, int) or target not in by_target:
+            raise ValueError("evaluation包含非法或额外target_issue")
+        entry = by_target[target]
+        if record.get("confirmation_index") != entry.confirmation_index:
+            raise ValueError("evaluation confirmation_index不匹配")
+        manifest = _require_mapping(record.get("manifest"), "evaluation.manifest")
+        if manifest.get("sha256") != entry.sha256:
+            raise ValueError("evaluation记录的manifest SHA-256不匹配")
+        if record.get("remote_preseal_verified") is not True:
+            raise ValueError("既有evaluation未通过远程封存验证")
+        if record.get("sealed_before_official_result") is not True:
+            raise ValueError("既有evaluation不是开奖前远程封存")
+        if record.get("evidence_status") != EVALUATION_EVIDENCE_STATUS:
+            raise ValueError("既有evaluation证据状态不正确")
+        if record.get("freeze_id") != FREEZE_ID:
+            raise ValueError("既有evaluation freeze_id不匹配")
+        if record.get("manifest_sha256_at_merge") != entry.sha256:
+            raise ValueError("既有evaluation合并提交manifest SHA-256不匹配")
+
+
+def next_chain_position(
+    *,
+    manifest_dir: Path,
+    results_dir: Path,
+    config: Mapping[str, Any],
+    target_issue: int,
+) -> ChainPosition:
+    """自动形成下一顺序位置；缺评价、断链、重复或超过365时拒绝。"""
+
+    entries = _load_manifest_chain(manifest_dir, config)
+    if len(entries) >= CONFIRMATION_ISSUE_COUNT:
+        raise ValueError("365期确认链已满，拒绝生成额外manifest")
+    _validate_prior_evaluations(entries, results_dir)
+    if not entries:
+        return ChainPosition(1, target_issue, None, None)
+    previous = entries[-1]
+    if target_issue <= previous.target_issue:
+        raise ValueError("下一target_issue必须严格晚于上一记录")
+    return ChainPosition(
+        confirmation_index=len(entries) + 1,
+        protocol_start_target_issue=int(
+            entries[0].payload["protocol_start_target_issue"]
+        ),
+        previous_target_issue=previous.target_issue,
+        previous_manifest_sha256=previous.sha256,
+    )
+
+
 def build_manifest(
     *,
     project_root: Path,
     data_path: Path,
     config_path: Path,
+    manifest_dir: Path,
+    results_dir: Path,
     issues: IntArray,
     draws: IntArray,
     target_issue: int,
-    generated_at_utc: str,
+    local_manifest_generated_at_utc: str,
     git_commit_sha: str,
     official_source_url: str,
     official_confirmed_at_utc: str,
 ) -> dict[str, object]:
-    """构造一个确定性、尚未落盘的目标期前 manifest。"""
+    """构造本地、尚未声称远程封存的目标期前 manifest。"""
 
     config = load_and_verify_freeze_config(project_root, config_path)
+    if config.get("freeze_status") != FREEZE_ACTIVE:
+        raise RuntimeError("冻结配置仍为pending，拒绝构造生产manifest")
     resolved_data = resolve_within(project_root, data_path, "输入数据")
     generated_text, generated_time = _canonical_utc(
-        generated_at_utc, "generated_at_utc"
+        local_manifest_generated_at_utc, "local_manifest_generated_at_utc"
     )
     confirmed_text, confirmed_time = _canonical_utc(
         official_confirmed_at_utc, "official_confirmed_at_utc"
@@ -502,36 +827,72 @@ def build_manifest(
         raise ValueError("官方期号来源必须是HTTPS URL")
     if not GIT_SHA_PATTERN.fullmatch(git_commit_sha):
         raise ValueError("当前Git提交SHA必须是40位小写十六进制")
-    historical_issues, historical_draws = _target_prior_history(
+    history_issues, history_draws = validate_unpublished_target(
         issues, draws, target_issue
+    )
+    latest_issue = int(history_issues[-1])
+    position = next_chain_position(
+        manifest_dir=manifest_dir,
+        results_dir=results_dir,
+        config=config,
+        target_issue=target_issue,
     )
     prediction = predict_frozen_models(issues, draws, target_issue=target_issue)
 
     model_payload: dict[str, object] = {}
     for strategy in PROBABILITY_STRATEGIES:
-        probabilities = [float(value) for value in prediction.probabilities[strategy]]
-        ranking = [int(value) for value in prediction.rankings[strategy]]
-        candidates = candidate_sets(prediction.probabilities[strategy])
-        model_payload[strategy] = {
+        payload: dict[str, object] = {
             "number_index": list(range(1, NUMBER_COUNT + 1)),
-            "probabilities": probabilities,
-            "ranking": ranking,
-            "top_k_candidates": {str(k): list(candidates[k]) for k in range(1, 11)},
+            "probabilities": [
+                float(value) for value in prediction.probabilities[strategy]
+            ],
         }
+        if strategy == UNIFORM_STRATEGY:
+            seeded: list[dict[str, object]] = []
+            for base_seed, ranking in zip(
+                UNIFORM_BASE_SEEDS, prediction.uniform_rankings, strict=True
+            ):
+                digest = hashlib.sha256(
+                    _uniform_seed_material(target_issue, base_seed)
+                ).digest()
+                seeded.append(
+                    {
+                        "base_seed": base_seed,
+                        "seed_material_sha256": digest.hex(),
+                        "seed_integer": int.from_bytes(
+                            digest[:8], byteorder="big", signed=False
+                        ),
+                        "ranking": list(map(int, ranking)),
+                        "top_k_candidates": _top_k_candidates(ranking),
+                    }
+                )
+            payload["rankings_by_seed"] = seeded
+        else:
+            ranking = prediction.rankings[strategy]
+            payload["ranking"] = list(map(int, ranking))
+            payload["top_k_candidates"] = _top_k_candidates(ranking)
+        model_payload[strategy] = payload
 
-    source_manifest = _require_mapping(config["source_manifest"], "source_manifest")
-    frozen_parameters = _require_mapping(config["models"], "models")
+    if latest_issue != int(history_issues[-1]):
+        raise RuntimeError("history_through_issue未使用输入数据最新期号")
     return {
         "schema_version": SCHEMA_VERSION,
-        "evidence_status": EVIDENCE_STATUS,
+        "evidence_status": MANIFEST_EVIDENCE_STATUS,
+        "remote_preseal_verified": False,
+        "freeze_id": FREEZE_ID,
+        "freeze_config_sha256": config["configuration_sha256"],
+        "confirmation_index": position.confirmation_index,
+        "protocol_start_target_issue": position.protocol_start_target_issue,
+        "previous_target_issue": position.previous_target_issue,
+        "previous_manifest_sha256": position.previous_manifest_sha256,
         "target_issue": target_issue,
-        "generated_at_utc": generated_text,
-        "history_through_issue": int(historical_issues[-1]),
-        "history_issue_count": len(historical_issues),
+        "local_manifest_generated_at_utc": generated_text,
+        "history_through_issue": latest_issue,
+        "history_issue_count": len(history_issues),
         "input_data": {
             "path": _relative_posix(project_root, resolved_data),
             "canonical_target_prior_sha256": canonical_history_sha256(
-                historical_issues, historical_draws
+                history_issues, history_draws
             ),
             "canonicalization": "issue_ascending_numbers_ascending_utf8_lf",
         },
@@ -539,9 +900,10 @@ def build_manifest(
         "official_issue_confirmation": {
             "source_url": official_source_url,
             "confirmed_at_utc": confirmed_text,
+            "confirmation_method": "explicit_official_source_not_integer_inference",
         },
-        "source_manifest": source_manifest,
-        "frozen_parameters": frozen_parameters,
+        "source_manifest": config["source_manifest"],
+        "frozen_parameters": config["models"],
         "selected_target_prior_parameters": {
             DYNAMIC_STRATEGY: {
                 "decay": prediction.dynamic_decay,
@@ -561,13 +923,6 @@ def build_manifest(
             },
         },
         "models": model_payload,
-        "confirmation_protocol": {
-            "fixed_future_issue_count": CONFIRMATION_ISSUE_COUNT,
-            "primary_metric": "per_issue_80_dimensional_brier_score",
-            "formal_summary_only_after_issue_count": CONFIRMATION_ISSUE_COUNT,
-            "multiplicity_correction": "holm_four_primary_comparisons",
-            "early_stopping": False,
-        },
     }
 
 
@@ -593,66 +948,61 @@ def write_manifest_exclusive(
 
 def _manifest_model_arrays(
     manifest: Mapping[str, Any],
-) -> tuple[dict[str, FloatArray], dict[str, IntArray]]:
+) -> tuple[dict[str, FloatArray], dict[str, IntArray], tuple[IntArray, ...]]:
     models = _require_mapping(manifest.get("models"), "manifest.models")
     if tuple(sorted(models)) != tuple(sorted(PROBABILITY_STRATEGIES)):
         raise ValueError("manifest未完整包含五个冻结模型")
     probabilities: dict[str, FloatArray] = {}
     rankings: dict[str, IntArray] = {}
+    uniform_rankings: list[IntArray] = []
+    target = manifest.get("target_issue")
+    if not isinstance(target, int):
+        raise ValueError("manifest target_issue非法")
     for strategy in PROBABILITY_STRATEGIES:
         model = _require_mapping(models[strategy], f"manifest.models.{strategy}")
         probability_array = cast(
             FloatArray, np.asarray(model.get("probabilities"), dtype=np.float64)
         )
-        ranking_array = cast(IntArray, np.asarray(model.get("ranking"), dtype=np.int64))
         if probability_array.shape != (NUMBER_COUNT,) or not np.all(
             (probability_array > 0.0) & (probability_array < 1.0)
         ):
             raise ValueError(f"manifest中的{strategy}概率非法")
         if not np.isclose(probability_array.sum(), DRAW_SIZE, atol=1e-9, rtol=0.0):
             raise ValueError(f"manifest中的{strategy}概率和不等于20")
-        if set(map(int, ranking_array)) != set(range(1, NUMBER_COUNT + 1)):
-            raise ValueError(f"manifest中的{strategy}排名非法")
         probabilities[strategy] = probability_array
-        rankings[strategy] = ranking_array
-    return probabilities, rankings
+        if strategy == UNIFORM_STRATEGY:
+            seeded = model.get("rankings_by_seed")
+            if not isinstance(seeded, list) or len(seeded) != len(UNIFORM_BASE_SEEDS):
+                raise ValueError("uniform必须包含20组预注册seed排名")
+            expected_rankings = uniform_seed_rankings(target)
+            for offset, (raw, base_seed, expected) in enumerate(
+                zip(seeded, UNIFORM_BASE_SEEDS, expected_rankings, strict=True)
+            ):
+                row = _require_mapping(raw, f"uniform.seed[{offset}]")
+                ranking = cast(IntArray, np.asarray(row.get("ranking"), dtype=np.int64))
+                digest = hashlib.sha256(
+                    _uniform_seed_material(target, base_seed)
+                ).digest()
+                if row.get("base_seed") != base_seed:
+                    raise ValueError("uniform base_seed顺序或取值漂移")
+                if row.get("seed_material_sha256") != digest.hex():
+                    raise ValueError("uniform seed material哈希不匹配")
+                if row.get("seed_integer") != int.from_bytes(
+                    digest[:8], byteorder="big", signed=False
+                ):
+                    raise ValueError("uniform seed integer不匹配")
+                if not np.array_equal(ranking, expected):
+                    raise ValueError("uniform随机排名不可复现或被篡改")
+                uniform_rankings.append(ranking)
+        else:
+            ranking = cast(IntArray, np.asarray(model.get("ranking"), dtype=np.int64))
+            if set(map(int, ranking)) != set(range(1, NUMBER_COUNT + 1)):
+                raise ValueError(f"manifest中的{strategy}排名非法")
+            rankings[strategy] = ranking
+    return probabilities, rankings, tuple(uniform_rankings)
 
 
-def build_evaluation_record(
-    *,
-    project_root: Path,
-    config_path: Path,
-    manifest_path: Path,
-    actual_numbers: IntArray,
-    official_result_published_at_utc: str,
-    evaluated_at_utc: str,
-) -> dict[str, object]:
-    """只用已封存概率和实际开奖号码构造开奖后评价记录。"""
-
-    config = load_and_verify_freeze_config(project_root, config_path)
-    resolved_manifest = resolve_within(project_root, manifest_path, "manifest")
-    manifest = _load_json_object(resolved_manifest)
-    if manifest.get("evidence_status") != EVIDENCE_STATUS:
-        raise ValueError("manifest证据状态不符合前瞻协议")
-    if manifest.get("source_manifest") != config.get("source_manifest"):
-        raise ValueError("manifest source manifest与当前冻结配置不一致")
-    target_issue = manifest.get("target_issue")
-    if not isinstance(target_issue, int) or target_issue <= 0:
-        raise ValueError("manifest目标期号非法")
-    generated_text = manifest.get("generated_at_utc")
-    if not isinstance(generated_text, str):
-        raise ValueError("manifest缺少generated_at_utc")
-    _, generated_time = _canonical_utc(generated_text, "generated_at_utc")
-    published_text, published_time = _canonical_utc(
-        official_result_published_at_utc, "official_result_published_at_utc"
-    )
-    evaluated_text, evaluated_time = _canonical_utc(
-        evaluated_at_utc, "evaluated_at_utc"
-    )
-    if evaluated_time < published_time:
-        raise ValueError("评价时间不得早于官方结果发布时间")
-    if generated_time >= published_time:
-        raise ValueError("manifest未在官方结果发布前封存")
+def _outcomes(actual_numbers: IntArray, target_issue: int) -> FloatArray:
     numbers = cast(IntArray, np.asarray(actual_numbers, dtype=np.int64))
     if numbers.shape != (DRAW_SIZE,):
         raise ValueError("实际开奖号码必须恰好20个")
@@ -661,54 +1011,202 @@ def build_evaluation_record(
     )
     outcomes = np.zeros(NUMBER_COUNT, dtype=np.float64)
     outcomes[numbers - 1] = 1.0
-    probabilities, rankings = _manifest_model_arrays(manifest)
+    return outcomes
 
+
+def calculate_manifest_metrics(
+    manifest: Mapping[str, Any], actual_numbers: IntArray
+) -> dict[str, object]:
+    """从manifest概率与排名独立复算五模型逐期指标。"""
+
+    target = manifest.get("target_issue")
+    if not isinstance(target, int):
+        raise ValueError("manifest目标期非法")
+    outcomes = _outcomes(actual_numbers, target)
+    probabilities, rankings, uniform_rankings = _manifest_model_arrays(manifest)
     model_metrics: dict[str, object] = {}
     for strategy in PROBABILITY_STRATEGIES:
         topk: dict[str, object] = {}
         for k in range(1, 11):
-            hits, expected, excess = top_k_hits(rankings[strategy], outcomes, k)
-            topk[str(k)] = {
-                "hits": hits,
-                "random_expected_hits": expected,
-                "excess_hits": excess,
-            }
+            if strategy == UNIFORM_STRATEGY:
+                seed_hits = np.asarray(
+                    [
+                        top_k_hits(ranking, outcomes, k)[0]
+                        for ranking in uniform_rankings
+                    ],
+                    dtype=np.float64,
+                )
+                hits = float(seed_hits.mean())
+                topk[str(k)] = {
+                    "hits": hits,
+                    "random_expected_hits": k / 4.0,
+                    "excess_hits": hits - k / 4.0,
+                    "aggregation": "within_issue_mean_over_20_seeds",
+                    "seed_count": len(UNIFORM_BASE_SEEDS),
+                }
+            else:
+                hits, expected, excess = top_k_hits(rankings[strategy], outcomes, k)
+                topk[str(k)] = {
+                    "hits": hits,
+                    "random_expected_hits": expected,
+                    "excess_hits": excess,
+                }
         model_metrics[strategy] = {
             "brier_score": brier_score(probabilities[strategy], outcomes),
             "bernoulli_log_loss": bernoulli_log_loss(probabilities[strategy], outcomes),
             "top_k": topk,
         }
+    return model_metrics
 
-    uniform_metrics = _require_mapping(
-        model_metrics[UNIFORM_STRATEGY], UNIFORM_STRATEGY
+
+def verify_remote_preseal(
+    *,
+    client: GitHubSealClient,
+    repository: str,
+    base_branch: str,
+    pr_number: int,
+    manifest_path: Path,
+    manifest_repository_path: str,
+    official_result_published_at_utc: str,
+) -> RemoteSealEvidence:
+    """通过GitHub API验证合并时文件原始字节，任一失败都抛错。"""
+
+    if pr_number <= 0:
+        raise ValueError("seal_pr_number必须为正整数")
+    published_text, published_time = _canonical_utc(
+        official_result_published_at_utc, "official_result_published_at_utc"
     )
+    try:
+        metadata = client.get_pull_request(repository, pr_number)
+    except Exception as exc:
+        raise RuntimeError("GitHub API不可用，远程封存验证失败") from exc
+    if metadata.get("repository") != repository:
+        raise ValueError("seal PR不属于冻结GitHub仓库")
+    if metadata.get("number") != pr_number:
+        raise ValueError("GitHub返回的PR编号不匹配")
+    if metadata.get("state") != "MERGED":
+        raise ValueError("seal PR尚未合并")
+    if metadata.get("baseRefName") != base_branch:
+        raise ValueError("seal PR base分支错误")
+    merged_at = metadata.get("mergedAt")
+    if not isinstance(merged_at, str):
+        raise ValueError("seal PR缺少合并时间")
+    merged_text, merged_time = _canonical_utc(merged_at, "seal_merged_at_utc")
+    if merged_time >= published_time:
+        raise ValueError("seal PR合并时间不早于官方结果发布时间")
+    merge_commit = metadata.get("mergeCommit")
+    if isinstance(merge_commit, dict):
+        merge_commit = merge_commit.get("oid")
+    if not isinstance(merge_commit, str) or not GIT_SHA_PATTERN.fullmatch(merge_commit):
+        raise ValueError("seal PR缺少合法合并提交SHA")
+    try:
+        remote_bytes = client.get_file_bytes(
+            repository, manifest_repository_path, merge_commit
+        )
+    except Exception as exc:
+        raise RuntimeError("合并提交不含该期manifest或GitHub API不可用") from exc
+    local_digest = raw_sha256(manifest_path)
+    remote_digest = hashlib.sha256(remote_bytes).hexdigest()
+    if remote_digest != local_digest:
+        raise ValueError("合并提交中的manifest SHA-256与本地文件不符")
+    url = metadata.get("url")
+    if not isinstance(url, str) or not url.startswith("https://github.com/"):
+        raise ValueError("seal PR URL非法")
+    return RemoteSealEvidence(
+        seal_pr_number=pr_number,
+        seal_pr_url=url,
+        seal_merge_commit_sha=merge_commit,
+        seal_merged_at_utc=merged_text,
+        manifest_sha256_at_merge=remote_digest,
+    )
+
+
+def build_evaluation_record(
+    *,
+    project_root: Path,
+    config_path: Path,
+    manifest_path: Path,
+    actual_numbers: IntArray,
+    seal_pr_number: int,
+    official_result_source_url: str,
+    official_result_published_at_utc: str,
+    evaluated_at_utc: str,
+    seal_client: GitHubSealClient,
+) -> dict[str, object]:
+    """远程封存验证成功后，才从已封存概率构造开奖后评价。"""
+
+    config = load_and_verify_freeze_config(project_root, config_path)
+    if config.get("freeze_status") != FREEZE_ACTIVE:
+        raise RuntimeError("冻结配置仍为pending，拒绝构造生产evaluation")
+    if not official_result_source_url.startswith("https://"):
+        raise ValueError("官方结果来源必须是HTTPS URL")
+    resolved_manifest = resolve_within(project_root, manifest_path, "manifest")
+    manifest = _load_json_object(resolved_manifest)
+    if manifest.get("evidence_status") != MANIFEST_EVIDENCE_STATUS:
+        raise ValueError("manifest证据状态不符合本地待远程封存协议")
+    if manifest.get("remote_preseal_verified") is not False:
+        raise ValueError("manifest不得预先声称远程封存")
+    if manifest.get("freeze_id") != config.get("freeze_id"):
+        raise ValueError("manifest freeze_id与当前冻结配置不一致")
+    if manifest.get("freeze_config_sha256") != config.get("configuration_sha256"):
+        raise ValueError("manifest冻结配置SHA-256与当前配置不一致")
+    if manifest.get("source_manifest") != config.get("source_manifest"):
+        raise ValueError("manifest source manifest与当前冻结配置不一致")
+    target_issue = manifest.get("target_issue")
+    if not isinstance(target_issue, int) or target_issue <= 0:
+        raise ValueError("manifest目标期号非法")
+    chain_entries = _load_manifest_chain(resolved_manifest.parent, config)
+    matching_entries = [
+        entry for entry in chain_entries if entry.path.resolve() == resolved_manifest
+    ]
+    if len(matching_entries) != 1:
+        raise ValueError("待评价manifest不在完整有效的365期顺序链中")
+    published_text, published_time = _canonical_utc(
+        official_result_published_at_utc, "official_result_published_at_utc"
+    )
+    evaluated_text, evaluated_time = _canonical_utc(
+        evaluated_at_utc, "evaluated_at_utc"
+    )
+    if evaluated_time < published_time:
+        raise ValueError("评价时间不得早于官方结果发布时间")
+    repository_path = _relative_posix(project_root, resolved_manifest)
+    github = _require_mapping(config["github"], "github")
+    seal = verify_remote_preseal(
+        client=seal_client,
+        repository=str(github["repository"]),
+        base_branch=str(github["base_branch"]),
+        pr_number=seal_pr_number,
+        manifest_path=resolved_manifest,
+        manifest_repository_path=repository_path,
+        official_result_published_at_utc=published_text,
+    )
+    numbers = cast(IntArray, np.asarray(actual_numbers, dtype=np.int64))
+    metrics = calculate_manifest_metrics(manifest, numbers)
+    uniform_metrics = _require_mapping(metrics[UNIFORM_STRATEGY], UNIFORM_STRATEGY)
     uniform_brier = float(uniform_metrics["brier_score"])
     uniform_log_loss = float(uniform_metrics["bernoulli_log_loss"])
     versus_uniform: dict[str, object] = {}
     for strategy in PRIMARY_COMPARISON_MODELS:
-        metrics = _require_mapping(model_metrics[strategy], strategy)
+        model = _require_mapping(metrics[strategy], strategy)
         versus_uniform[strategy] = {
             "brier_difference_model_minus_uniform": (
-                float(metrics["brier_score"]) - uniform_brier
+                float(model["brier_score"]) - uniform_brier
             ),
             "log_loss_difference_model_minus_uniform": (
-                float(metrics["bernoulli_log_loss"]) - uniform_log_loss
+                float(model["bernoulli_log_loss"]) - uniform_log_loss
             ),
         }
-    changepoint_metrics = _require_mapping(
-        model_metrics[CHANGEPOINT_STRATEGY], CHANGEPOINT_STRATEGY
-    )
+    changepoint = _require_mapping(metrics[CHANGEPOINT_STRATEGY], CHANGEPOINT_STRATEGY)
     versus_fixed: dict[str, object] = {}
     for strategy in (FIXED_NORMAL_STRATEGY, FIXED_HIGH_STRATEGY):
-        metrics = _require_mapping(model_metrics[strategy], strategy)
+        fixed = _require_mapping(metrics[strategy], strategy)
         versus_fixed[strategy] = {
             "brier_difference_changepoint_minus_fixed": (
-                float(changepoint_metrics["brier_score"])
-                - float(metrics["brier_score"])
+                float(changepoint["brier_score"]) - float(fixed["brier_score"])
             ),
             "log_loss_difference_changepoint_minus_fixed": (
-                float(changepoint_metrics["bernoulli_log_loss"])
-                - float(metrics["bernoulli_log_loss"])
+                float(changepoint["bernoulli_log_loss"])
+                - float(fixed["bernoulli_log_loss"])
             ),
         }
     selected = _require_mapping(
@@ -720,19 +1218,30 @@ def build_evaluation_record(
     )
     return {
         "schema_version": SCHEMA_VERSION,
-        "evidence_status": EVIDENCE_STATUS,
+        "evidence_status": EVALUATION_EVIDENCE_STATUS,
+        "freeze_id": FREEZE_ID,
+        "confirmation_index": manifest["confirmation_index"],
         "target_issue": target_issue,
         "evaluated_at_utc": evaluated_text,
+        "official_result_source_url": official_result_source_url,
         "official_result_published_at_utc": published_text,
         "actual_numbers": sorted(map(int, numbers)),
+        "remote_preseal_verified": True,
+        "sealed_before_official_result": True,
+        "seal_pr_number": seal.seal_pr_number,
+        "seal_pr_url": seal.seal_pr_url,
+        "seal_merge_commit_sha": seal.seal_merge_commit_sha,
+        "seal_merged_at_utc": seal.seal_merged_at_utc,
+        "manifest_sha256_at_merge": seal.manifest_sha256_at_merge,
         "manifest": {
-            "path": _relative_posix(project_root, resolved_manifest),
+            "path": repository_path,
             "sha256": raw_sha256(resolved_manifest),
-            "generated_at_utc": generated_text,
-            "sealed_before_official_result": True,
+            "local_manifest_generated_at_utc": manifest[
+                "local_manifest_generated_at_utc"
+            ],
         },
         "changepoint_state": changepoint_selected.get("state"),
-        "models": model_metrics,
+        "models": metrics,
         "comparisons": {
             "versus_uniform": versus_uniform,
             "changepoint_versus_fixed_baselines": versus_fixed,
@@ -746,6 +1255,8 @@ def write_evaluation_exclusive(record: Mapping[str, object], results_dir: Path) 
     target_issue = record.get("target_issue")
     if not isinstance(target_issue, int) or target_issue <= 0:
         raise ValueError("评价记录缺少合法target_issue")
+    if record.get("remote_preseal_verified") is not True:
+        raise ValueError("未经远程封存验证的评价不得写入")
     results_dir.mkdir(parents=True, exist_ok=True)
     path = results_dir / f"{target_issue}.json"
     try:
@@ -776,99 +1287,317 @@ def holm_adjust(p_values: Mapping[str, float]) -> dict[str, float]:
     return adjusted
 
 
-def build_formal_primary_summary(results_dir: Path) -> dict[str, object]:
-    """仅在恰好365条预封存记录时形成四项主要比较的正式汇总。"""
+def moving_block_bootstrap_inference(values: FloatArray) -> BootstrapInference:
+    """按固定30期循环连续块、20000次重采样执行单侧主要检验。"""
 
-    records = [_load_json_object(path) for path in sorted(results_dir.glob("*.json"))]
-    issue_values = [record.get("target_issue") for record in records]
-    if len(records) != CONFIRMATION_ISSUE_COUNT:
-        raise ValueError("正式汇总只能在恰好365个未来开奖期完成后运行")
-    if any(not isinstance(issue, int) or issue <= 0 for issue in issue_values):
-        raise ValueError("正式汇总含非法目标期号")
-    if len(set(issue_values)) != CONFIRMATION_ISSUE_COUNT:
-        raise ValueError("正式汇总含重复目标期")
-    for record in records:
-        if record.get("evidence_status") != EVIDENCE_STATUS:
-            raise ValueError("正式汇总只能包含v2预封存研究记录")
-        manifest = _require_mapping(record.get("manifest"), "record.manifest")
-        if manifest.get("sealed_before_official_result") is not True:
-            raise ValueError("正式汇总只能包含开奖前封存记录")
-        manifest_digest = manifest.get("sha256")
-        if not isinstance(manifest_digest, str) or not SHA256_PATTERN.fullmatch(
-            manifest_digest
-        ):
-            raise ValueError("正式汇总记录缺少合法manifest SHA-256")
+    deltas = cast(FloatArray, np.asarray(values, dtype=np.float64))
+    if deltas.shape != (CONFIRMATION_ISSUE_COUNT,) or not np.isfinite(deltas).all():
+        raise ValueError("移动分块bootstrap必须接收365个有限逐期差值")
+    observed = float(deltas.mean())
+    centered = deltas - observed
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    block_count = math.ceil(CONFIRMATION_ISSUE_COUNT / BOOTSTRAP_BLOCK_LENGTH)
+    sample_means = np.empty(BOOTSTRAP_RESAMPLE_COUNT, dtype=np.float64)
+    null_means = np.empty_like(sample_means)
+    offsets = np.arange(BOOTSTRAP_BLOCK_LENGTH, dtype=np.int64)
+    batch_size = 500
+    for first in range(0, BOOTSTRAP_RESAMPLE_COUNT, batch_size):
+        size = min(batch_size, BOOTSTRAP_RESAMPLE_COUNT - first)
+        starts = rng.integers(
+            0,
+            CONFIRMATION_ISSUE_COUNT,
+            size=(size, block_count),
+            dtype=np.int64,
+        )
+        indices = (
+            starts[:, :, None] + offsets[None, None, :]
+        ) % CONFIRMATION_ISSUE_COUNT
+        flattened = indices.reshape(size, -1)[:, :CONFIRMATION_ISSUE_COUNT]
+        sample_means[first : first + size] = deltas[flattened].mean(axis=1)
+        null_means[first : first + size] = centered[flattened].mean(axis=1)
+    raw_p = (1.0 + float(np.count_nonzero(null_means <= observed))) / (
+        BOOTSTRAP_RESAMPLE_COUNT + 1.0
+    )
+    lower, upper = np.quantile(sample_means, [0.025, 0.975], method="linear")
+    return BootstrapInference(
+        observed_mean=observed,
+        ordinary_standard_error=float(
+            deltas.std(ddof=1) / np.sqrt(CONFIRMATION_ISSUE_COUNT)
+        ),
+        interval_lower=float(lower),
+        interval_upper=float(upper),
+        raw_p_value=raw_p,
+    )
 
-    deltas_by_model: dict[str, FloatArray] = {}
-    raw_p_values: dict[str, float] = {}
-    summaries: dict[str, object] = {}
-    for strategy in PRIMARY_COMPARISON_MODELS:
-        values: list[float] = []
-        for record in records:
-            comparisons = _require_mapping(record.get("comparisons"), "comparisons")
-            versus_uniform = _require_mapping(
-                comparisons.get("versus_uniform"), "versus_uniform"
+
+def _validate_completed_chain(
+    manifest_dir: Path, results_dir: Path, config: Mapping[str, Any]
+) -> tuple[tuple[ManifestChainEntry, dict[str, Any]], ...]:
+    entries = _load_manifest_chain(manifest_dir, config)
+    if len(entries) != CONFIRMATION_ISSUE_COUNT:
+        raise ValueError("正式汇总必须恰好包含365份manifest")
+    paths = sorted(results_dir.glob("*.json")) if results_dir.exists() else []
+    expected_names = {f"{entry.target_issue}.json" for entry in entries}
+    if (
+        len(paths) != CONFIRMATION_ISSUE_COUNT
+        or {path.name for path in paths} != expected_names
+    ):
+        raise ValueError("正式汇总必须恰好包含365份一一对应的evaluation")
+    records = {path.stem: _load_json_object(path) for path in paths}
+    paired: list[tuple[ManifestChainEntry, dict[str, Any]]] = []
+    for entry in entries:
+        record = records[str(entry.target_issue)]
+        if record.get("target_issue") != entry.target_issue:
+            raise ValueError("evaluation target_issue与manifest不匹配")
+        if record.get("confirmation_index") != entry.confirmation_index:
+            raise ValueError("evaluation confirmation_index与manifest不匹配")
+        if record.get("freeze_id") != FREEZE_ID:
+            raise ValueError("evaluation freeze_id不匹配")
+        if record.get("evidence_status") != EVALUATION_EVIDENCE_STATUS:
+            raise ValueError("evaluation证据状态不正确")
+        if record.get("remote_preseal_verified") is not True:
+            raise ValueError("evaluation未通过远程封存验证")
+        if record.get("sealed_before_official_result") is not True:
+            raise ValueError("evaluation不是开奖前远程封存")
+        manifest_info = _require_mapping(record.get("manifest"), "evaluation.manifest")
+        if manifest_info.get("sha256") != entry.sha256:
+            raise ValueError("evaluation记录的manifest SHA与真实文件不一致")
+        if record.get("manifest_sha256_at_merge") != entry.sha256:
+            raise ValueError("合并提交manifest SHA与真实文件不一致")
+        paired.append((entry, record))
+    return tuple(paired)
+
+
+def _serialize_calibration(
+    probabilities: FloatArray, outcomes: FloatArray
+) -> dict[str, object]:
+    result = calibration_summary(probabilities, outcomes, bins=10)
+    return {
+        "expected_calibration_error": result.expected_calibration_error,
+        "bins": [
+            {
+                "bin_index": row.bin_index,
+                "lower_bound": row.lower_bound,
+                "upper_bound": row.upper_bound,
+                "count": row.count,
+                "mean_predicted_probability": row.mean_predicted_probability,
+                "actual_rate": row.actual_rate,
+                "absolute_gap": row.absolute_gap,
+                "weighted_gap": row.weighted_gap,
+            }
+            for row in result.bins
+        ],
+    }
+
+
+def build_formal_summary(
+    *, manifest_dir: Path, results_dir: Path, config: Mapping[str, Any]
+) -> dict[str, object]:
+    """验证完整365期链，并独立复算主要与全部次要指标。"""
+
+    _validate_freeze_contract(config)
+    if config.get("freeze_status") != FREEZE_ACTIVE:
+        raise RuntimeError("冻结配置仍为pending，拒绝正式summary")
+    paired = _validate_completed_chain(manifest_dir, results_dir, config)
+    probabilities: dict[str, list[FloatArray]] = {
+        strategy: [] for strategy in PROBABILITY_STRATEGIES
+    }
+    outcomes: list[FloatArray] = []
+    brier_values: dict[str, list[float]] = {
+        strategy: [] for strategy in PROBABILITY_STRATEGIES
+    }
+    log_values: dict[str, list[float]] = {
+        strategy: [] for strategy in PROBABILITY_STRATEGIES
+    }
+    topk_values: dict[str, dict[int, list[float]]] = {
+        strategy: {k: [] for k in range(1, 11)} for strategy in PROBABILITY_STRATEGIES
+    }
+    issue_index: list[dict[str, object]] = []
+    high_change_count = 0
+    changepoint_deltas: dict[str, dict[str, list[float]]] = {
+        FIXED_NORMAL_STRATEGY: {"brier": [], "log_loss": []},
+        FIXED_HIGH_STRATEGY: {"brier": [], "log_loss": []},
+    }
+    for entry, record in paired:
+        actual = cast(
+            IntArray, np.asarray(record.get("actual_numbers"), dtype=np.int64)
+        )
+        outcome = _outcomes(actual, entry.target_issue)
+        outcomes.append(outcome)
+        model_probabilities, _, _ = _manifest_model_arrays(entry.payload)
+        recomputed = calculate_manifest_metrics(entry.payload, actual)
+        if record.get("models") != recomputed:
+            raise ValueError("evaluation指标不能从manifest和实际结果独立复算")
+        for strategy in PROBABILITY_STRATEGIES:
+            probabilities[strategy].append(model_probabilities[strategy])
+            metrics = _require_mapping(recomputed[strategy], strategy)
+            brier_values[strategy].append(float(metrics["brier_score"]))
+            log_values[strategy].append(float(metrics["bernoulli_log_loss"]))
+            topk = _require_mapping(metrics["top_k"], f"{strategy}.top_k")
+            for k in range(1, 11):
+                row = _require_mapping(topk[str(k)], f"{strategy}.top_k.{k}")
+                topk_values[strategy][k].append(float(row["hits"]))
+        if record.get("changepoint_state") == "high_change":
+            high_change_count += 1
+        cp_brier = brier_values[CHANGEPOINT_STRATEGY][-1]
+        cp_log = log_values[CHANGEPOINT_STRATEGY][-1]
+        for baseline in (FIXED_NORMAL_STRATEGY, FIXED_HIGH_STRATEGY):
+            changepoint_deltas[baseline]["brier"].append(
+                cp_brier - brier_values[baseline][-1]
             )
-            model = _require_mapping(versus_uniform.get(strategy), strategy)
-            values.append(float(model["brier_difference_model_minus_uniform"]))
-        deltas = cast(FloatArray, np.asarray(values, dtype=np.float64))
-        deltas_by_model[strategy] = deltas
-        test = ttest_1samp(deltas, popmean=0.0, alternative="less")
-        raw_p = float(test.pvalue)
-        raw_p_values[strategy] = raw_p
-        summaries[strategy] = {
-            "issue_count": len(deltas),
-            "mean_brier_difference_model_minus_uniform": float(deltas.mean()),
-            "ordinary_standard_error": float(deltas.std(ddof=1) / np.sqrt(len(deltas))),
-            "one_sided_p_value_unadjusted": raw_p,
+            changepoint_deltas[baseline]["log_loss"].append(
+                cp_log - log_values[baseline][-1]
+            )
+        issue_index.append(
+            {
+                "confirmation_index": entry.confirmation_index,
+                "target_issue": entry.target_issue,
+                "manifest_sha256": entry.sha256,
+            }
+        )
+
+    outcome_matrix = cast(FloatArray, np.vstack(outcomes))
+    model_summaries: dict[str, object] = {}
+    for strategy in PROBABILITY_STRATEGIES:
+        probability_matrix = cast(FloatArray, np.vstack(probabilities[strategy]))
+        model_summaries[strategy] = {
+            "mean_brier_score": float(np.mean(brier_values[strategy])),
+            "mean_bernoulli_log_loss": float(np.mean(log_values[strategy])),
+            "calibration": _serialize_calibration(probability_matrix, outcome_matrix),
+            "mean_top_k_hits": {
+                str(k): float(np.mean(topk_values[strategy][k])) for k in range(1, 11)
+            },
+            "top_k_aggregation": (
+                "within_issue_mean_over_20_seeds_then_mean_over_365_issues"
+                if strategy == UNIFORM_STRATEGY
+                else "mean_over_365_issues"
+            ),
         }
-    adjusted = holm_adjust(raw_p_values)
+
+    bootstrap_results: dict[str, BootstrapInference] = {}
+    raw_p_values: dict[str, float] = {}
     for strategy in PRIMARY_COMPARISON_MODELS:
-        model_summary = _require_mapping(summaries[strategy], strategy)
-        model_summary["holm_adjusted_p_value"] = adjusted[strategy]
+        deltas = cast(
+            FloatArray,
+            np.asarray(brier_values[strategy], dtype=np.float64)
+            - np.asarray(brier_values[UNIFORM_STRATEGY], dtype=np.float64),
+        )
+        inference = moving_block_bootstrap_inference(deltas)
+        bootstrap_results[strategy] = inference
+        raw_p_values[strategy] = inference.raw_p_value
+    adjusted = holm_adjust(raw_p_values)
+    primary: dict[str, object] = {}
+    for strategy, inference in bootstrap_results.items():
+        primary[strategy] = {
+            "mean_brier_difference_model_minus_uniform": inference.observed_mean,
+            "ordinary_standard_error": inference.ordinary_standard_error,
+            "moving_block_bootstrap_95_interval": [
+                inference.interval_lower,
+                inference.interval_upper,
+            ],
+            "one_sided_p_value_unadjusted": inference.raw_p_value,
+            "holm_adjusted_p_value": adjusted[strategy],
+        }
+
     return {
         "schema_version": SCHEMA_VERSION,
-        "evidence_status": "completed_prospective_confirmation_summary",
+        "freeze_id": FREEZE_ID,
+        "evidence_status": SUMMARY_EVIDENCE_STATUS,
         "issue_count": CONFIRMATION_ISSUE_COUNT,
         "primary_metric": "per_issue_80_dimensional_brier_score",
         "issue_is_statistical_unit": True,
-        "test": {
-            "name": "one_sided_paired_issue_level_t_test",
+        "primary_inference": {
             "alternative": "mean_model_minus_uniform_brier_less_than_zero",
-            "multiplicity_correction": "holm",
+            "block_length": BOOTSTRAP_BLOCK_LENGTH,
             "comparison_count": len(PRIMARY_COMPARISON_MODELS),
+            "method": "circular_moving_block_bootstrap",
+            "multiplicity_correction": "Holm",
+            "resample_count": BOOTSTRAP_RESAMPLE_COUNT,
+            "seed": BOOTSTRAP_SEED,
+            "comparisons": primary,
+            "limitations": (
+                "结论依赖时间平稳性和预注册30期分块长度假设；不得根据结果改变分块长度或另选检验。"
+            ),
         },
-        "comparisons": summaries,
+        "secondary_metrics": {
+            "status": "descriptive_not_for_model_selection",
+            "models": model_summaries,
+            "changepoint_versus_fixed_baselines": {
+                baseline: {
+                    "mean_brier_difference_changepoint_minus_fixed": float(
+                        np.mean(values["brier"])
+                    ),
+                    "mean_log_loss_difference_changepoint_minus_fixed": float(
+                        np.mean(values["log_loss"])
+                    ),
+                }
+                for baseline, values in changepoint_deltas.items()
+            },
+            "high_change_trigger_count": high_change_count,
+            "high_change_trigger_proportion": (
+                high_change_count / CONFIRMATION_ISSUE_COUNT
+            ),
+            "issue_index": issue_index,
+        },
     }
 
 
 __all__ = [
+    "BOOTSTRAP_BLOCK_LENGTH",
+    "BOOTSTRAP_RESAMPLE_COUNT",
+    "BOOTSTRAP_SEED",
+    "CHANGEPOINT_STRATEGY",
     "CONFIRMATION_ISSUE_COUNT",
     "DATA_RELATIVE_PATH",
-    "EVIDENCE_STATUS",
+    "DYNAMIC_STRATEGY",
+    "EVALUATION_EVIDENCE_STATUS",
+    "FIXED_HIGH_STRATEGY",
+    "FIXED_NORMAL_STRATEGY",
+    "FREEZE_ACTIVE",
+    "FREEZE_ID",
+    "FREEZE_PENDING",
     "FREEZE_RELATIVE_PATH",
+    "FREEZE_TAG",
+    "FROZEN_SOURCE_PATHS",
+    "GITHUB_BASE_BRANCH",
+    "GITHUB_REPOSITORY",
+    "MANIFEST_EVIDENCE_STATUS",
     "MANIFEST_RELATIVE_DIR",
     "PRIMARY_COMPARISON_MODELS",
     "PROBABILITY_STRATEGIES",
     "RESULT_RELATIVE_DIR",
     "SCHEMA_VERSION",
+    "SECONDARY_METRICS",
+    "SUMMARY_EVIDENCE_STATUS",
+    "UNIFORM_BASE_SEEDS",
     "UNIFORM_STRATEGY",
+    "BootstrapInference",
+    "GitHubSealClient",
     "ProspectivePrediction",
+    "RemoteSealEvidence",
     "build_evaluation_record",
-    "build_formal_primary_summary",
+    "build_formal_summary",
     "build_manifest",
+    "calculate_manifest_metrics",
     "canonical_history_sha256",
     "canonical_json_bytes",
+    "configuration_fingerprint",
     "holm_adjust",
     "load_and_verify_freeze_config",
     "load_history_csv",
+    "moving_block_bootstrap_inference",
+    "next_chain_position",
     "normalized_lf_sha256",
     "predict_frozen_models",
     "raw_sha256",
+    "require_active_freeze",
     "require_contract_path",
     "resolve_within",
     "source_manifest_fingerprint",
+    "uniform_seed_rankings",
     "utc_now_string",
+    "validate_unpublished_target",
+    "verify_remote_preseal",
     "write_evaluation_exclusive",
     "write_manifest_exclusive",
 ]

@@ -1,11 +1,15 @@
-"""冻结、评价和最终汇总快乐8 v2 的未来前瞻记录。"""
+"""冻结、远程封存验证、评价和最终汇总快乐8 v2 的未来前瞻记录。"""
 
 from __future__ import annotations
 
 import argparse
+import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Mapping
+from urllib.parse import quote
 
 import numpy as np
 
@@ -16,14 +20,17 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.research_v2.prospective_monitor import (  # noqa: E402
     DATA_RELATIVE_PATH,
     FREEZE_RELATIVE_PATH,
+    FROZEN_SOURCE_PATHS,
     MANIFEST_RELATIVE_DIR,
     RESULT_RELATIVE_DIR,
+    GitHubSealClient,
     build_evaluation_record,
-    build_formal_primary_summary,
+    build_formal_summary,
     build_manifest,
     canonical_json_bytes,
     load_and_verify_freeze_config,
     load_history_csv,
+    require_active_freeze,
     require_contract_path,
     utc_now_string,
     write_evaluation_exclusive,
@@ -31,7 +38,63 @@ from src.research_v2.prospective_monitor import (  # noqa: E402
 )
 
 
-def parse_args() -> argparse.Namespace:
+class GhCliSealClient(GitHubSealClient):
+    """用已登录 gh 调用 GitHub API；任何错误均向上抛出并 fail closed。"""
+
+    def __init__(self, executable: str | None = None) -> None:
+        self._executable = executable or _find_gh_executable()
+
+    def get_pull_request(self, repository: str, pr_number: int) -> Mapping[str, object]:
+        completed = subprocess.run(
+            [
+                self._executable,
+                "pr",
+                "view",
+                str(pr_number),
+                "--repo",
+                repository,
+                "--json",
+                "number,url,state,mergedAt,mergeCommit,baseRefName",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout)
+        if not isinstance(payload, dict):
+            raise ValueError("GitHub PR响应不是JSON对象")
+        payload["repository"] = repository
+        return payload
+
+    def get_file_bytes(
+        self, repository: str, repository_path: str, commit_sha: str
+    ) -> bytes:
+        encoded_path = quote(repository_path, safe="/")
+        completed = subprocess.run(
+            [
+                self._executable,
+                "api",
+                f"repos/{repository}/contents/{encoded_path}?ref={commit_sha}",
+                "-H",
+                "Accept: application/vnd.github.raw+json",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return completed.stdout
+
+
+def _find_gh_executable() -> str:
+    located = shutil.which("gh.exe") or shutil.which("gh")
+    if located is not None:
+        return located
+    standard = Path(r"C:\Program Files\GitHub CLI\gh.exe")
+    if standard.is_file():
+        return str(standard)
+    raise FileNotFoundError("未找到已安装的GitHub CLI，远程封存验证失败")
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """解析三个严格分离的前瞻阶段操作。"""
 
     parser = argparse.ArgumentParser(
@@ -46,29 +109,30 @@ def parse_args() -> argparse.Namespace:
     manifest.add_argument("--target-issue", type=int, required=True)
     manifest.add_argument("--official-source-url", required=True)
     manifest.add_argument("--official-confirmed-at-utc", required=True)
-    manifest.add_argument("--generated-at-utc")
-    manifest.add_argument("--git-commit-sha")
     manifest.add_argument("--data", type=Path, default=DATA_RELATIVE_PATH)
     manifest.add_argument("--freeze", type=Path, default=FREEZE_RELATIVE_PATH)
     manifest.add_argument("--manifest-dir", type=Path, default=MANIFEST_RELATIVE_DIR)
+    manifest.add_argument("--results-dir", type=Path, default=RESULT_RELATIVE_DIR)
 
     evaluate = subparsers.add_parser(
-        "evaluate", help="开奖后只使用已封存概率写入一次评价"
+        "evaluate", help="开奖后远程验证封存并只写入一次评价"
     )
     evaluate.add_argument("--target-issue", type=int, required=True)
+    evaluate.add_argument("--seal-pr-number", type=int, required=True)
+    evaluate.add_argument("--official-result-source-url", required=True)
     evaluate.add_argument("--official-result-published-at-utc", required=True)
-    evaluate.add_argument("--evaluated-at-utc")
     evaluate.add_argument("--data", type=Path, default=DATA_RELATIVE_PATH)
     evaluate.add_argument("--freeze", type=Path, default=FREEZE_RELATIVE_PATH)
     evaluate.add_argument("--manifest-dir", type=Path, default=MANIFEST_RELATIVE_DIR)
     evaluate.add_argument("--results-dir", type=Path, default=RESULT_RELATIVE_DIR)
 
     summary = subparsers.add_parser(
-        "summary", help="仅在365期全部完成后生成Holm校正主要指标汇总"
+        "summary", help="仅在365期完整链完成后生成固定分块bootstrap汇总"
     )
     summary.add_argument("--freeze", type=Path, default=FREEZE_RELATIVE_PATH)
+    summary.add_argument("--manifest-dir", type=Path, default=MANIFEST_RELATIVE_DIR)
     summary.add_argument("--results-dir", type=Path, default=RESULT_RELATIVE_DIR)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _git_head(project_root: Path) -> str:
@@ -81,6 +145,27 @@ def _git_head(project_root: Path) -> str:
     return completed.stdout.strip().lower()
 
 
+def _assert_frozen_worktree_clean(project_root: Path) -> None:
+    paths = [FREEZE_RELATIVE_PATH.as_posix(), *FROZEN_SOURCE_PATHS]
+    completed = subprocess.run(
+        ["git", "-C", str(project_root), "status", "--porcelain", "--", *paths],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if completed.stdout.strip():
+        raise RuntimeError("冻结源码或配置存在未提交修改，拒绝生产操作")
+
+
+def _validated_active_config(
+    project_root: Path, config_path: Path
+) -> dict[str, object]:
+    config = load_and_verify_freeze_config(project_root, config_path)
+    require_active_freeze(project_root, config)
+    _assert_frozen_worktree_clean(project_root)
+    return config
+
+
 def _manifest_command(args: argparse.Namespace, project_root: Path) -> Path:
     data_path = require_contract_path(
         project_root, args.data, DATA_RELATIVE_PATH, "正式数据路径"
@@ -91,23 +176,34 @@ def _manifest_command(args: argparse.Namespace, project_root: Path) -> Path:
     manifest_dir = require_contract_path(
         project_root, args.manifest_dir, MANIFEST_RELATIVE_DIR, "manifest目录"
     )
+    results_dir = require_contract_path(
+        project_root, args.results_dir, RESULT_RELATIVE_DIR, "前瞻结果目录"
+    )
+    _validated_active_config(project_root, config_path)
     issues, draws = load_history_csv(data_path)
     manifest = build_manifest(
         project_root=project_root,
         data_path=data_path,
         config_path=config_path,
+        manifest_dir=manifest_dir,
+        results_dir=results_dir,
         issues=issues,
         draws=draws,
         target_issue=int(args.target_issue),
-        generated_at_utc=args.generated_at_utc or utc_now_string(),
-        git_commit_sha=args.git_commit_sha or _git_head(project_root),
+        local_manifest_generated_at_utc=utc_now_string(),
+        git_commit_sha=_git_head(project_root),
         official_source_url=str(args.official_source_url),
         official_confirmed_at_utc=str(args.official_confirmed_at_utc),
     )
     return write_manifest_exclusive(manifest, manifest_dir)
 
 
-def _evaluate_command(args: argparse.Namespace, project_root: Path) -> Path:
+def _evaluate_command(
+    args: argparse.Namespace,
+    project_root: Path,
+    *,
+    seal_client: GitHubSealClient | None = None,
+) -> Path:
     data_path = require_contract_path(
         project_root, args.data, DATA_RELATIVE_PATH, "正式数据路径"
     )
@@ -120,6 +216,7 @@ def _evaluate_command(args: argparse.Namespace, project_root: Path) -> Path:
     results_dir = require_contract_path(
         project_root, args.results_dir, RESULT_RELATIVE_DIR, "前瞻结果目录"
     )
+    _validated_active_config(project_root, config_path)
     issues, draws = load_history_csv(data_path)
     matches = np.flatnonzero(issues == int(args.target_issue))
     if len(matches) != 1:
@@ -130,8 +227,11 @@ def _evaluate_command(args: argparse.Namespace, project_root: Path) -> Path:
         config_path=config_path,
         manifest_path=manifest_dir / f"{int(args.target_issue)}.json",
         actual_numbers=actual,
+        seal_pr_number=int(args.seal_pr_number),
+        official_result_source_url=str(args.official_result_source_url),
         official_result_published_at_utc=str(args.official_result_published_at_utc),
-        evaluated_at_utc=args.evaluated_at_utc or utc_now_string(),
+        evaluated_at_utc=utc_now_string(),
+        seal_client=seal_client or GhCliSealClient(),
     )
     return write_evaluation_exclusive(record, results_dir)
 
@@ -140,12 +240,17 @@ def _summary_command(args: argparse.Namespace, project_root: Path) -> Path:
     config_path = require_contract_path(
         project_root, args.freeze, FREEZE_RELATIVE_PATH, "冻结配置路径"
     )
-    load_and_verify_freeze_config(project_root, config_path)
+    manifest_dir = require_contract_path(
+        project_root, args.manifest_dir, MANIFEST_RELATIVE_DIR, "manifest目录"
+    )
     results_dir = require_contract_path(
         project_root, args.results_dir, RESULT_RELATIVE_DIR, "前瞻结果目录"
     )
-    summary = build_formal_primary_summary(results_dir)
-    output = results_dir / "formal_primary_summary.json"
+    config = _validated_active_config(project_root, config_path)
+    summary = build_formal_summary(
+        manifest_dir=manifest_dir, results_dir=results_dir, config=config
+    )
+    output = results_dir / "formal_summary.json"
     try:
         with output.open("xb") as stream:
             stream.write(canonical_json_bytes(summary))
@@ -154,8 +259,8 @@ def _summary_command(args: argparse.Namespace, project_root: Path) -> Path:
     return output
 
 
-def run() -> int:
-    args = parse_args()
+def run(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     project_root = Path(args.project_root).resolve()
     if args.command == "manifest":
         output = _manifest_command(args, project_root)

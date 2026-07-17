@@ -1,12 +1,48 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "freeze_id": "kl8-v2-prospective-365-v1",
   "freeze_status": "research_model_and_protocol_frozen_pending_code_audit",
-  "evidence_status": "prospective_presealed_research",
+  "freeze_tag": "kl8-v2-prospective-365-v1",
+  "configuration_sha256": "7a7c1346b0c0d69338d3129877a7fc0dde73cf489a456867af88b845a6290613",
+  "evidence_status": {
+    "evaluation_verified": "prospective_presealed_research",
+    "manifest_local": "prospective_manifest_pending_remote_seal",
+    "summary_completed": "completed_prospective_confirmation_summary"
+  },
   "confirmation_issue_count": 365,
+  "github": {
+    "base_branch": "scientific-model",
+    "repository": "xznzz1/kl8-lottery-analyzer"
+  },
   "models": {
     "uniform_random": {
-      "probability": 0.25
+      "base_seeds": [
+        202601,
+        202602,
+        202603,
+        202604,
+        202605,
+        202606,
+        202607,
+        202608,
+        202609,
+        202610,
+        202611,
+        202612,
+        202613,
+        202614,
+        202615,
+        202616,
+        202617,
+        202618,
+        202619,
+        202620
+      ],
+      "probability": 0.25,
+      "ranking_method": "sha256_seeded_numpy_permutation",
+      "seed_material_format": "kl8-v2-prospective-365-v1|<target_issue>|<base_seed>",
+      "seed_integer_derivation": "sha256_first_8_bytes_unsigned_big_endian",
+      "top_k_aggregation": "within_issue_mean_over_20_seeds"
     },
     "dynamic_bayesian": {
       "decay_grid": [
@@ -49,17 +85,19 @@
     }
   },
   "confirmation_protocol": {
+    "bootstrap": {
+      "alternative": "mean_model_minus_uniform_brier_less_than_zero",
+      "block_length": 30,
+      "method": "circular_moving_block_bootstrap",
+      "resample_count": 20000,
+      "seed": 20260717
+    },
     "early_success_claims_forbidden": true,
     "early_stopping_forbidden": true,
     "formal_summary_after_exact_issue_count": 365,
     "issue_is_statistical_unit": true,
     "model_changes_during_confirmation_forbidden": true,
-    "multiplicity": {
-      "comparison_count": 4,
-      "correction": "Holm",
-      "raw_test": "one_sided_paired_issue_level_t_test",
-      "alternative": "mean_model_minus_uniform_brier_less_than_zero"
-    },
+    "multiplicity_correction": "Holm",
     "primary_comparisons": [
       "dynamic_bayesian_minus_uniform_random",
       "fixed_normal_bayesian_minus_uniform_random",
@@ -68,42 +106,48 @@
     ],
     "primary_metric": "per_issue_80_dimensional_brier_score",
     "secondary_metrics": [
-      "bernoulli_log_loss",
-      "fixed_bin_calibration_and_ece",
-      "top_1_through_top_10_hits",
-      "changepoint_minus_fixed_normal",
-      "changepoint_minus_fixed_high",
-      "high_change_trigger_proportion"
+      "mean_brier_all_five_models",
+      "mean_bernoulli_log_loss_all_five_models",
+      "fixed_10_bin_calibration_and_ece",
+      "mean_top_1_through_top_10_hits_all_five_models",
+      "uniform_20_seed_within_issue_mean_top_k",
+      "changepoint_minus_fixed_normal_brier_and_log_loss",
+      "changepoint_minus_fixed_high_brier_and_log_loss",
+      "high_change_trigger_count_and_proportion",
+      "per_issue_index_and_manifest_sha256"
     ],
+    "secondary_metrics_are_descriptive": true,
     "secondary_metrics_cannot_select_models": true
   },
   "manifest_policy": {
     "directory": "reports/research_v2_prospective_manifests",
     "existing_manifest_policy": "refuse_overwrite_rewrite_or_delete",
-    "must_commit_and_push_before_official_result": true
+    "remote_claim_at_generation": false,
+    "sequence": "immutable_hash_chain_1_to_365"
   },
   "evaluation_policy": {
     "directory": "results/research_v2_prospective",
+    "duplicate_target_policy": "refuse_overwrite",
     "record_format": "one_immutable_json_per_target_issue",
-    "duplicate_target_policy": "refuse_overwrite"
+    "remote_verification": "github_merged_pr_fail_closed"
   },
   "claim_boundary": {
+    "fair_lottery_note": "若彩票公平且独立，历史模型不应存在稳定预测优势。",
     "historical_v2_status": "exploratory_development_evidence",
-    "prospective_status_before_365": "ongoing_prospective_presealed_research_no_success_claim",
-    "fair_lottery_note": "若彩票公平且独立，历史模型不应存在稳定预测优势。"
+    "prospective_status_before_365": "ongoing_prospective_presealed_research_no_success_claim"
   },
   "source_manifest": {
     "algorithm": "sha256_utf8_normalized_lf",
     "files": {
-      "scripts/research_v2_prospective.py": "e23ee7de9a6d43653c9be87e128725bbb6a7542e79d7f0e0081368e0b6e85542",
+      "scripts/research_v2_prospective.py": "bd65ee6594d8e3aca31a27ba0b432843ca7d9f200fc0f4d40f52c8cfcbb8305a",
       "src/research_v2/bayesian.py": "a983d438fb7d9a0d50ff967c3d974f66683964642df0efbd0849f783933b33f2",
       "src/research_v2/changepoint.py": "01ff685de51757fc2da5cad5ee7265200b776f2b4b9c6339c3228c72ec90ddcd",
       "src/research_v2/changepoint_evaluation.py": "02b4c577e3e0611af5b568e69b810d983254b68c45feb9ff4d56aa0fff4abae5",
       "src/research_v2/evaluation.py": "ecc85c7557926e9bdc35b5571c3a887ea64d40b98680a0bae95e8dc3828b1b07",
       "src/research_v2/metrics.py": "3785f3a4800f94b98d28da3b57f4d65e2420c8b119483cea29e23fa6e7867cd3",
-      "src/research_v2/prospective_monitor.py": "87756a0a47bd18d1143e5d1357aba920e3c5e0a9c2a720c255782c0f78da1622"
+      "src/research_v2/prospective_monitor.py": "b094ec978f283f805e78d42e384e73dc7b0e915157953778c24f1392796b89f1"
     },
-    "fingerprint": "641f5526d942ff5b07b49e0b7e97368853915501d53544eb3812541da625b54c",
+    "fingerprint": "08405998fb095d3c0e99459b63fde282ad8c307e4dcfe4d9e2e3cc73c85fb275",
     "change_policy": "任一冻结源码变化时拒绝生成manifest、评价或正式汇总；必须建立新的协议版本。"
   }
 }
