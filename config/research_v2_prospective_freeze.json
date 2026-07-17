@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "freeze_id": "kl8-v2-prospective-365-v1",
+  "freeze_status": "research_model_and_protocol_frozen_pending_code_audit",
+  "evidence_status": "prospective_presealed_research",
+  "confirmation_issue_count": 365,
+  "models": {
+    "uniform_random": {
+      "probability": 0.25
+    },
+    "dynamic_bayesian": {
+      "decay_grid": [
+        0.97,
+        0.99,
+        0.995
+      ],
+      "minimum_initial_history": 365,
+      "minimum_inner_observations": 120,
+      "parameter_selection": "target_prior_inner_mean_brier_argmin_preregistered_grid_order_tiebreak",
+      "prior_strength_grid": [
+        5.0,
+        20.0,
+        80.0
+      ]
+    },
+    "fixed_normal_bayesian": {
+      "decay": 0.995,
+      "history": "all_target_prior_history",
+      "prior_strength": 80.0
+    },
+    "fixed_high_bayesian": {
+      "decay": 0.95,
+      "history": "last_120_target_prior_issues",
+      "prior_strength": 80.0
+    },
+    "changepoint_bayesian": {
+      "change_quantile": 0.9,
+      "fixed_high_model": "fixed_high_bayesian",
+      "fixed_normal_model": "fixed_normal_bayesian",
+      "minimum_effective_history": 120,
+      "recent_window_grid": [
+        30,
+        60,
+        120
+      ],
+      "reference_window": 240,
+      "selection_metric": "inner_mean_brier",
+      "threshold_training": "target_prior_change_scores_only"
+    }
+  },
+  "confirmation_protocol": {
+    "early_success_claims_forbidden": true,
+    "early_stopping_forbidden": true,
+    "formal_summary_after_exact_issue_count": 365,
+    "issue_is_statistical_unit": true,
+    "model_changes_during_confirmation_forbidden": true,
+    "multiplicity": {
+      "comparison_count": 4,
+      "correction": "Holm",
+      "raw_test": "one_sided_paired_issue_level_t_test",
+      "alternative": "mean_model_minus_uniform_brier_less_than_zero"
+    },
+    "primary_comparisons": [
+      "dynamic_bayesian_minus_uniform_random",
+      "fixed_normal_bayesian_minus_uniform_random",
+      "fixed_high_bayesian_minus_uniform_random",
+      "changepoint_bayesian_minus_uniform_random"
+    ],
+    "primary_metric": "per_issue_80_dimensional_brier_score",
+    "secondary_metrics": [
+      "bernoulli_log_loss",
+      "fixed_bin_calibration_and_ece",
+      "top_1_through_top_10_hits",
+      "changepoint_minus_fixed_normal",
+      "changepoint_minus_fixed_high",
+      "high_change_trigger_proportion"
+    ],
+    "secondary_metrics_cannot_select_models": true
+  },
+  "manifest_policy": {
+    "directory": "reports/research_v2_prospective_manifests",
+    "existing_manifest_policy": "refuse_overwrite_rewrite_or_delete",
+    "must_commit_and_push_before_official_result": true
+  },
+  "evaluation_policy": {
+    "directory": "results/research_v2_prospective",
+    "record_format": "one_immutable_json_per_target_issue",
+    "duplicate_target_policy": "refuse_overwrite"
+  },
+  "claim_boundary": {
+    "historical_v2_status": "exploratory_development_evidence",
+    "prospective_status_before_365": "ongoing_prospective_presealed_research_no_success_claim",
+    "fair_lottery_note": "若彩票公平且独立，历史模型不应存在稳定预测优势。"
+  },
+  "source_manifest": {
+    "algorithm": "sha256_utf8_normalized_lf",
+    "files": {
+      "scripts/research_v2_prospective.py": "e23ee7de9a6d43653c9be87e128725bbb6a7542e79d7f0e0081368e0b6e85542",
+      "src/research_v2/bayesian.py": "a983d438fb7d9a0d50ff967c3d974f66683964642df0efbd0849f783933b33f2",
+      "src/research_v2/changepoint.py": "01ff685de51757fc2da5cad5ee7265200b776f2b4b9c6339c3228c72ec90ddcd",
+      "src/research_v2/changepoint_evaluation.py": "02b4c577e3e0611af5b568e69b810d983254b68c45feb9ff4d56aa0fff4abae5",
+      "src/research_v2/evaluation.py": "ecc85c7557926e9bdc35b5571c3a887ea64d40b98680a0bae95e8dc3828b1b07",
+      "src/research_v2/metrics.py": "3785f3a4800f94b98d28da3b57f4d65e2420c8b119483cea29e23fa6e7867cd3",
+      "src/research_v2/prospective_monitor.py": "87756a0a47bd18d1143e5d1357aba920e3c5e0a9c2a720c255782c0f78da1622"
+    },
+    "fingerprint": "641f5526d942ff5b07b49e0b7e97368853915501d53544eb3812541da625b54c",
+    "change_policy": "任一冻结源码变化时拒绝生成manifest、评价或正式汇总；必须建立新的协议版本。"
+  }
+}
