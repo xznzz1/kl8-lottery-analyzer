@@ -3,9 +3,10 @@
   "freeze_id": "kl8-v2-prospective-365-v1",
   "freeze_status": "research_model_and_protocol_frozen_pending_code_audit",
   "freeze_tag": "kl8-v2-prospective-365-v1",
-  "configuration_sha256": "7a7c1346b0c0d69338d3129877a7fc0dde73cf489a456867af88b845a6290613",
+  "configuration_sha256": "98826a8729229caa02757d64cb48c21d1a7ae61bda1bf9a0396b7bc64705c9e2",
   "evidence_status": {
     "evaluation_verified": "prospective_presealed_research",
+    "final_evaluation_seal": "final_evaluation_remote_anchor_verified",
     "manifest_local": "prospective_manifest_pending_remote_seal",
     "summary_completed": "completed_prospective_confirmation_summary"
   },
@@ -120,16 +121,28 @@
     "secondary_metrics_cannot_select_models": true
   },
   "manifest_policy": {
+    "continuity_rule": "previous_target_must_equal_current_data_latest_issue",
     "directory": "reports/research_v2_prospective_manifests",
     "existing_manifest_policy": "refuse_overwrite_rewrite_or_delete",
+    "previous_evaluation_chain": "raw_sha256_and_independent_recalculation",
     "remote_claim_at_generation": false,
-    "sequence": "immutable_hash_chain_1_to_365"
+    "sequence": "immutable_manifest_and_evaluation_hash_chain_1_to_365"
   },
   "evaluation_policy": {
     "directory": "results/research_v2_prospective",
     "duplicate_target_policy": "refuse_overwrite",
+    "final_evaluation_seal_filename": "final_evaluation_seal.json",
+    "local_creation_state": "remote_evaluation_anchor_pending",
+    "previous_evaluation_remote_anchor": "next_manifest_seal_pr",
     "record_format": "one_immutable_json_per_target_issue",
     "remote_verification": "github_merged_pr_fail_closed"
+  },
+  "summary_policy": {
+    "data_path": "data_cache/kl8/data.csv",
+    "evaluation_enumeration": "numeric_target_issue_json_only",
+    "final_evaluation_anchor_required": true,
+    "formal_summary_filename": "formal_summary.json",
+    "official_data_recalculation_required": true
   },
   "claim_boundary": {
     "fair_lottery_note": "若彩票公平且独立，历史模型不应存在稳定预测优势。",
@@ -139,15 +152,16 @@
   "source_manifest": {
     "algorithm": "sha256_utf8_normalized_lf",
     "files": {
-      "scripts/research_v2_prospective.py": "bd65ee6594d8e3aca31a27ba0b432843ca7d9f200fc0f4d40f52c8cfcbb8305a",
+      ".gitattributes": "ee1f907eb7fbaa3c329b05c8608852c408c8f79e3a62ce5b09cae467085811e4",
+      "scripts/research_v2_prospective.py": "6fd5abba26c9fd4225983df21fe9ed31f186c8e14029ad7905e1986c2d28a06b",
       "src/research_v2/bayesian.py": "a983d438fb7d9a0d50ff967c3d974f66683964642df0efbd0849f783933b33f2",
       "src/research_v2/changepoint.py": "01ff685de51757fc2da5cad5ee7265200b776f2b4b9c6339c3228c72ec90ddcd",
       "src/research_v2/changepoint_evaluation.py": "02b4c577e3e0611af5b568e69b810d983254b68c45feb9ff4d56aa0fff4abae5",
       "src/research_v2/evaluation.py": "ecc85c7557926e9bdc35b5571c3a887ea64d40b98680a0bae95e8dc3828b1b07",
       "src/research_v2/metrics.py": "3785f3a4800f94b98d28da3b57f4d65e2420c8b119483cea29e23fa6e7867cd3",
-      "src/research_v2/prospective_monitor.py": "b094ec978f283f805e78d42e384e73dc7b0e915157953778c24f1392796b89f1"
+      "src/research_v2/prospective_monitor.py": "38387d98849676d11d510b8ab31aa74efc424ca197dfef9205cc6c120ac2572f"
     },
-    "fingerprint": "08405998fb095d3c0e99459b63fde282ad8c307e4dcfe4d9e2e3cc73c85fb275",
+    "fingerprint": "04f567c0631d2c1b074dbe5fe069889e1f0a58af7dd47245d6ac7f70e1fc2d57",
     "change_policy": "任一冻结源码变化时拒绝生成manifest、评价或正式汇总；必须建立新的协议版本。"
   }
 }

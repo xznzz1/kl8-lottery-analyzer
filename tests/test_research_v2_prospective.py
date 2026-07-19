@@ -22,9 +22,12 @@ from src.research_v2.prospective_monitor import (
     DATA_RELATIVE_PATH,
     DYNAMIC_STRATEGY,
     EVALUATION_EVIDENCE_STATUS,
+    FINAL_EVALUATION_SEAL_EVIDENCE_STATUS,
+    FINAL_EVALUATION_SEAL_FILENAME,
     FIXED_HIGH_STRATEGY,
     FIXED_NORMAL_STRATEGY,
     FREEZE_ACTIVE,
+    FREEZE_ID,
     FREEZE_PENDING,
     FREEZE_RELATIVE_PATH,
     FROZEN_SOURCE_PATHS,
@@ -40,8 +43,10 @@ from src.research_v2.prospective_monitor import (
     ManifestChainEntry,
     ProspectivePrediction,
     build_evaluation_record,
+    build_final_evaluation_seal,
     build_formal_summary,
     build_manifest,
+    calculate_evaluation_comparisons,
     calculate_manifest_metrics,
     canonical_json_bytes,
     configuration_fingerprint,
@@ -59,6 +64,7 @@ from src.research_v2.prospective_monitor import (
     uniform_seed_rankings,
     validate_unpublished_target,
     write_evaluation_exclusive,
+    write_final_evaluation_seal_exclusive,
     write_manifest_exclusive,
 )
 
@@ -240,8 +246,10 @@ class _SealClient:
         base: str = GITHUB_BASE_BRANCH,
         merged_at: str = "2026-07-01T11:00:00Z",
         repository: str = GITHUB_REPOSITORY,
+        file_bytes: Mapping[str, bytes] | None = None,
     ) -> None:
         self.manifest_bytes = manifest_bytes
+        self.file_bytes = file_bytes
         self.state = state
         self.base = base
         self.merged_at = merged_at
@@ -260,7 +268,9 @@ class _SealClient:
         }
 
     def get_file_bytes(self, repository: str, path: str, commit_sha: str) -> bytes:
-        del repository, path, commit_sha
+        del repository, commit_sha
+        if self.file_bytes is not None:
+            return self.file_bytes[path]
         return self.manifest_bytes
 
 
@@ -303,7 +313,38 @@ def _build_verified_evaluation(
     )
 
 
-def test_pending_status_blocks_all_three_production_commands(tmp_path: Path) -> None:
+def _completed_first_issue(
+    tmp_path: Path,
+) -> tuple[
+    Path,
+    Path,
+    Path,
+    IntArray,
+    IntArray,
+    int,
+    Path,
+]:
+    root, data, config, issues, draws, target, _ = _prepare_project(tmp_path)
+    _, manifest_path = _write_test_manifest(root, data, config, issues, draws, target)
+    evaluation = _build_verified_evaluation(root, config, manifest_path)
+    evaluation_path = write_evaluation_exclusive(evaluation, root / RESULT_RELATIVE_DIR)
+    next_issues = np.append(issues, target)
+    next_draws = np.vstack((draws, np.arange(1, 21, dtype=np.int64)))
+    return root, data, config, next_issues, next_draws, target, evaluation_path
+
+
+def _second_manifest_ready(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, int, Path, Path]:
+    root, data, config, issues, draws, previous_target, evaluation_path = (
+        _completed_first_issue(tmp_path)
+    )
+    target = previous_target + 10
+    _, manifest_path = _write_test_manifest(root, data, config, issues, draws, target)
+    return root, config, data, target, manifest_path, evaluation_path
+
+
+def test_pending_status_blocks_all_four_production_commands(tmp_path: Path) -> None:
     root, _, _, _, _, target, _ = _prepare_project(tmp_path, status=FREEZE_PENDING)
     manifest_args = prospective_cli.parse_args(
         [
@@ -334,9 +375,21 @@ def test_pending_status_blocks_all_three_production_commands(tmp_path: Path) -> 
         ]
     )
     summary_args = prospective_cli.parse_args(["--project-root", str(root), "summary"])
+    finalize_args = prospective_cli.parse_args(
+        [
+            "--project-root",
+            str(root),
+            "finalize-evaluation",
+            "--target-issue",
+            str(target),
+            "--evaluation-seal-pr-number",
+            "1",
+        ]
+    )
     for command, args in (
         (prospective_cli._manifest_command, manifest_args),
         (prospective_cli._evaluate_command, evaluate_args),
+        (prospective_cli._finalize_evaluation_command, finalize_args),
         (prospective_cli._summary_command, summary_args),
     ):
         with pytest.raises(RuntimeError, match="pending"):
@@ -357,6 +410,8 @@ def test_cli_has_no_manual_time_or_git_sha_overrides() -> None:
         prospective_cli.parse_args([*base, "--generated-at-utc", "x"])
     with pytest.raises(SystemExit):
         prospective_cli.parse_args([*base, "--git-commit-sha", "a" * 40])
+    with pytest.raises(SystemExit):
+        prospective_cli.parse_args(["summary", "--data", "other.csv"])
 
 
 def test_active_freeze_requires_existing_ancestor_tag() -> None:
@@ -472,33 +527,96 @@ def test_manifest_chain_requires_previous_evaluation_and_links_hash(
     _, first_path = _write_test_manifest(root, data, config_path, issues, draws, target)
     with pytest.raises(ValueError, match="一一对应"):
         _build_test_manifest(root, data, config_path, issues, draws, target + 1)
-    evaluation = {
-        "evidence_status": EVALUATION_EVIDENCE_STATUS,
-        "freeze_id": config["freeze_id"],
-        "target_issue": target,
-        "confirmation_index": 1,
-        "remote_preseal_verified": True,
-        "sealed_before_official_result": True,
-        "manifest_sha256_at_merge": raw_sha256(first_path),
-        "manifest": {"sha256": raw_sha256(first_path)},
-    }
+    evaluation = _build_verified_evaluation(root, config_path, first_path)
     results = root / RESULT_RELATIVE_DIR
-    results.mkdir(parents=True)
-    (results / f"{target}.json").write_bytes(canonical_json_bytes(evaluation))
-    second = _build_test_manifest(root, data, config_path, issues, draws, target + 1)
+    evaluation_path = write_evaluation_exclusive(evaluation, results)
+    next_issues = np.append(issues, target)
+    next_draws = np.vstack((draws, np.arange(1, 21, dtype=np.int64)))
+    second = _build_test_manifest(
+        root, data, config_path, next_issues, next_draws, target + 10
+    )
     assert second["confirmation_index"] == 2
     assert second["protocol_start_target_issue"] == target
     assert second["previous_target_issue"] == target
     assert second["previous_manifest_sha256"] == raw_sha256(first_path)
+    assert second["history_through_issue"] == target
+    assert second["previous_evaluation_target_issue"] == target
+    assert second["previous_evaluation_confirmation_index"] == 1
+    assert (
+        second["previous_evaluation_path"]
+        == (RESULT_RELATIVE_DIR / f"{target}.json").as_posix()
+    )
+    assert second["previous_evaluation_sha256"] == raw_sha256(evaluation_path)
     second["previous_manifest_sha256"] = "0" * 64
     write_manifest_exclusive(second, root / MANIFEST_RELATIVE_DIR)
     with pytest.raises(ValueError, match="SHA-256链断裂"):
         next_chain_position(
+            project_root=root,
             manifest_dir=root / MANIFEST_RELATIVE_DIR,
             results_dir=results,
             config=config,
-            target_issue=target + 2,
+            target_issue=target + 20,
+            history_issues=next_issues,
+            history_draws=next_draws,
         )
+
+
+def test_same_freeze_cannot_skip_official_draw_and_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_prediction(monkeypatch)
+    root, data, config, issues, draws, previous_target, _ = _completed_first_issue(
+        tmp_path
+    )
+    skipped_issue = previous_target + 5
+    skipped_issues = np.append(issues, skipped_issue)
+    skipped_draws = np.vstack((draws, np.arange(21, 41, dtype=np.int64)))
+    for proposed_target in (previous_target + 10, previous_target + 100):
+        with pytest.raises(ValueError, match="同一freeze_id禁止跳过后恢复"):
+            _build_test_manifest(
+                root,
+                data,
+                config,
+                skipped_issues,
+                skipped_draws,
+                proposed_target,
+            )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("raw_bytes", "原始字节不是规范"),
+        ("actual_numbers", "actual_numbers"),
+        ("models", "models"),
+        ("comparisons", "comparisons"),
+    ],
+)
+def test_modified_previous_evaluation_refuses_next_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    message: str,
+) -> None:
+    _install_fake_prediction(monkeypatch)
+    root, data, config, issues, draws, previous_target, evaluation_path = (
+        _completed_first_issue(tmp_path)
+    )
+    if mutation == "raw_bytes":
+        evaluation_path.write_bytes(evaluation_path.read_bytes() + b" ")
+    else:
+        record = json.loads(evaluation_path.read_text(encoding="utf-8"))
+        if mutation == "actual_numbers":
+            record["actual_numbers"] = list(range(2, 22))
+        elif mutation == "models":
+            record["models"][DYNAMIC_STRATEGY]["brier_score"] += 0.1
+        else:
+            record["comparisons"]["versus_uniform"][DYNAMIC_STRATEGY][
+                "brier_difference_model_minus_uniform"
+            ] += 0.1
+        evaluation_path.write_bytes(canonical_json_bytes(record))
+    with pytest.raises(ValueError, match=message):
+        _build_test_manifest(root, data, config, issues, draws, previous_target + 10)
 
 
 def test_existing_manifest_and_evaluation_cannot_be_overwritten(
@@ -578,16 +696,150 @@ def test_verified_evaluation_records_complete_remote_evidence(
     assert record["seal_merged_at_utc"] == "2026-07-01T11:00:00Z"
     assert record["manifest_sha256_at_merge"] == raw_sha256(path)
     assert record["official_result_source_url"].startswith("https://")
+    assert record["evaluation_locally_created"] is True
+    assert record["remote_evaluation_anchor_pending"] is True
+    assert isinstance(record["evaluation_payload_sha256"], str)
+
+
+@pytest.mark.parametrize(
+    ("previous_bytes", "message"),
+    [
+        (None, "不含上一evaluation"),
+        (b"wrong", "上一evaluation SHA-256不匹配"),
+    ],
+)
+def test_next_manifest_seal_must_anchor_previous_evaluation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    previous_bytes: bytes | None,
+    message: str,
+) -> None:
+    _install_fake_prediction(monkeypatch)
+    root, config, _, _, manifest_path, evaluation_path = _second_manifest_ready(
+        tmp_path
+    )
+    manifest_repository_path = manifest_path.relative_to(root).as_posix()
+    evaluation_repository_path = evaluation_path.relative_to(root).as_posix()
+    files = {manifest_repository_path: manifest_path.read_bytes()}
+    if previous_bytes is not None:
+        files[evaluation_repository_path] = previous_bytes
+    client = _SealClient(manifest_path.read_bytes(), file_bytes=files)
+    with pytest.raises((RuntimeError, ValueError), match=message):
+        _build_verified_evaluation(root, config, manifest_path, client)
+
+
+def test_next_evaluation_records_previous_remote_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_prediction(monkeypatch)
+    root, config, _, _, manifest_path, evaluation_path = _second_manifest_ready(
+        tmp_path
+    )
+    files = {
+        manifest_path.relative_to(root).as_posix(): manifest_path.read_bytes(),
+        evaluation_path.relative_to(root).as_posix(): evaluation_path.read_bytes(),
+    }
+    record = _build_verified_evaluation(
+        root,
+        config,
+        manifest_path,
+        _SealClient(manifest_path.read_bytes(), file_bytes=files),
+    )
+    assert record["previous_evaluation_remote_anchor_verified"] is True
+    anchor = cast(dict[str, Any], record["previous_evaluation_anchor"])
+    assert anchor["sha256"] == raw_sha256(evaluation_path)
+    assert anchor["sha256_at_merge"] == raw_sha256(evaluation_path)
+
+
+def _prepare_final_evaluation(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, int]:
+    root, _, config, _, _, _, _ = _prepare_project(tmp_path)
+    results = root / RESULT_RELATIVE_DIR
+    results.mkdir(parents=True)
+    first_target = 2030001
+    for offset in range(CONFIRMATION_ISSUE_COUNT - 1):
+        (results / f"{first_target + offset}.json").write_bytes(
+            canonical_json_bytes({"fixture": offset})
+        )
+    target = first_target + CONFIRMATION_ISSUE_COUNT - 1
+    evaluation_path = results / f"{target}.json"
+    evaluation = {
+        "schema_version": 2,
+        "evidence_status": EVALUATION_EVIDENCE_STATUS,
+        "freeze_id": FREEZE_ID,
+        "confirmation_index": CONFIRMATION_ISSUE_COUNT,
+        "target_issue": target,
+        "evaluation_locally_created": True,
+        "remote_evaluation_anchor_pending": True,
+        "remote_preseal_verified": True,
+        "sealed_before_official_result": True,
+    }
+    evaluation["evaluation_payload_sha256"] = monitor._evaluation_payload_fingerprint(
+        evaluation
+    )
+    evaluation_path.write_bytes(canonical_json_bytes(evaluation))
+    return root, config, evaluation_path, target
+
+
+@pytest.mark.parametrize(
+    ("client_factory", "message"),
+    [
+        (lambda raw: _SealClient(raw, state="OPEN"), "尚未合并"),
+        (lambda raw: _SealClient(raw, base="main"), "base分支错误"),
+        (lambda raw: _SealClient(b"wrong"), "与本地不符"),
+        (lambda raw: _SealClient(raw, file_bytes={}), "不含第365期evaluation"),
+    ],
+)
+def test_final_evaluation_seal_fail_closed(
+    tmp_path: Path, client_factory: Any, message: str
+) -> None:
+    root, config, evaluation_path, target = _prepare_final_evaluation(tmp_path)
+    with pytest.raises((RuntimeError, ValueError), match=message):
+        build_final_evaluation_seal(
+            project_root=root,
+            config_path=config,
+            results_dir=root / RESULT_RELATIVE_DIR,
+            target_issue=target,
+            evaluation_seal_pr_number=99,
+            seal_client=client_factory(evaluation_path.read_bytes()),
+        )
+
+
+def test_final_evaluation_seal_is_verified_and_non_overwriting(
+    tmp_path: Path,
+) -> None:
+    root, config, evaluation_path, target = _prepare_final_evaluation(tmp_path)
+    seal = build_final_evaluation_seal(
+        project_root=root,
+        config_path=config,
+        results_dir=root / RESULT_RELATIVE_DIR,
+        target_issue=target,
+        evaluation_seal_pr_number=99,
+        seal_client=_SealClient(evaluation_path.read_bytes()),
+    )
+    assert seal["remote_evaluation_anchor_verified"] is True
+    assert seal["evaluation_sha256"] == raw_sha256(evaluation_path)
+    output = write_final_evaluation_seal_exclusive(seal, root / RESULT_RELATIVE_DIR)
+    assert output.name == FINAL_EVALUATION_SEAL_FILENAME
+    with pytest.raises(FileExistsError, match="拒绝覆盖"):
+        write_final_evaluation_seal_exclusive(seal, root / RESULT_RELATIVE_DIR)
 
 
 def test_summary_rejects_missing_manifest_or_evaluation(tmp_path: Path) -> None:
-    _, _, _, _, _, _, config = _prepare_project(tmp_path)
+    root, _, _, issues, draws, _, config = _prepare_project(tmp_path)
     manifests = tmp_path / "manifests"
     results = tmp_path / "results"
     manifests.mkdir()
     results.mkdir(exist_ok=True)
     with pytest.raises(ValueError, match="365份manifest"):
-        build_formal_summary(manifest_dir=manifests, results_dir=results, config=config)
+        build_formal_summary(
+            manifest_dir=manifests,
+            results_dir=results,
+            config=config,
+            official_issues=issues,
+            official_draws=draws,
+        )
 
     previous_target: int | None = None
     previous_digest: str | None = None
@@ -600,8 +852,17 @@ def test_summary_rejects_missing_manifest_or_evaluation(tmp_path: Path) -> None:
             "freeze_config_sha256": config["configuration_sha256"],
             "freeze_id": config["freeze_id"],
             "frozen_parameters": config["models"],
+            "history_through_issue": previous_target,
             "previous_manifest_sha256": previous_digest,
             "previous_target_issue": previous_target,
+            "previous_evaluation_target_issue": previous_target,
+            "previous_evaluation_confirmation_index": (offset if offset > 0 else None),
+            "previous_evaluation_path": (
+                (RESULT_RELATIVE_DIR / f"{previous_target}.json").as_posix()
+                if previous_target is not None
+                else None
+            ),
+            "previous_evaluation_sha256": ("1" * 64 if offset > 0 else None),
             "protocol_start_target_issue": first_target,
             "remote_preseal_verified": False,
             "schema_version": 2,
@@ -613,14 +874,188 @@ def test_summary_rejects_missing_manifest_or_evaluation(tmp_path: Path) -> None:
         previous_target = target
         previous_digest = raw_sha256(path)
     with pytest.raises(ValueError, match="365份一一对应的evaluation"):
-        build_formal_summary(manifest_dir=manifests, results_dir=results, config=config)
+        build_formal_summary(
+            manifest_dir=manifests,
+            results_dir=results,
+            config=config,
+            official_issues=issues,
+            official_draws=draws,
+        )
     with pytest.raises(ValueError, match="365期确认链已满"):
         next_chain_position(
+            project_root=root,
             manifest_dir=manifests,
             results_dir=results,
             config=config,
             target_issue=first_target + CONFIRMATION_ISSUE_COUNT,
+            history_issues=issues,
+            history_draws=draws,
         )
+
+
+def _write_compact_completed_chain(
+    root: Path, config: dict[str, Any], *, include_final_seal: bool
+) -> tuple[Path, Path, IntArray, IntArray]:
+    manifests = root / MANIFEST_RELATIVE_DIR
+    results = root / RESULT_RELATIVE_DIR
+    manifests.mkdir(parents=True, exist_ok=True)
+    results.mkdir(parents=True, exist_ok=True)
+    first_target = 2030001
+    previous_target: int | None = None
+    previous_manifest_digest: str | None = None
+    previous_evaluation_digest: str | None = None
+    previous_evaluation_path: Path | None = None
+    issues: list[int] = []
+    draws: list[IntArray] = []
+    for offset in range(CONFIRMATION_ISSUE_COUNT):
+        target = first_target + offset
+        actual = np.asarray(_draw_for_period(offset), dtype=np.int64)
+        manifest = {
+            "schema_version": 2,
+            "evidence_status": MANIFEST_EVIDENCE_STATUS,
+            "remote_preseal_verified": False,
+            "freeze_id": FREEZE_ID,
+            "freeze_config_sha256": config["configuration_sha256"],
+            "confirmation_index": offset + 1,
+            "protocol_start_target_issue": first_target,
+            "previous_target_issue": previous_target,
+            "previous_manifest_sha256": previous_manifest_digest,
+            "previous_evaluation_target_issue": previous_target,
+            "previous_evaluation_confirmation_index": (offset if offset > 0 else None),
+            "previous_evaluation_path": (
+                previous_evaluation_path.relative_to(root).as_posix()
+                if previous_evaluation_path is not None
+                else None
+            ),
+            "previous_evaluation_sha256": previous_evaluation_digest,
+            "target_issue": target,
+            "source_manifest": config["source_manifest"],
+            "frozen_parameters": config["models"],
+            "history_through_issue": previous_target,
+        }
+        manifest_path = manifests / f"{target}.json"
+        manifest_path.write_bytes(canonical_json_bytes(manifest))
+        manifest_digest = raw_sha256(manifest_path)
+        evaluation = {
+            "schema_version": 2,
+            "evidence_status": EVALUATION_EVIDENCE_STATUS,
+            "freeze_id": FREEZE_ID,
+            "confirmation_index": offset + 1,
+            "target_issue": target,
+            "actual_numbers": sorted(map(int, actual)),
+            "remote_preseal_verified": True,
+            "sealed_before_official_result": True,
+            "evaluation_locally_created": True,
+            "remote_evaluation_anchor_pending": True,
+            "manifest_sha256_at_merge": manifest_digest,
+            "manifest": {"sha256": manifest_digest},
+            "previous_evaluation_remote_anchor_verified": (
+                True if offset > 0 else None
+            ),
+            "previous_evaluation_anchor": (
+                {
+                    "target_issue": previous_target,
+                    "confirmation_index": offset,
+                    "path": previous_evaluation_path.relative_to(root).as_posix(),
+                    "sha256": previous_evaluation_digest,
+                    "sha256_at_merge": previous_evaluation_digest,
+                }
+                if previous_evaluation_path is not None
+                else None
+            ),
+        }
+        evaluation["evaluation_payload_sha256"] = (
+            monitor._evaluation_payload_fingerprint(evaluation)
+        )
+        evaluation_path = results / f"{target}.json"
+        evaluation_path.write_bytes(canonical_json_bytes(evaluation))
+        previous_target = target
+        previous_manifest_digest = manifest_digest
+        previous_evaluation_path = evaluation_path
+        previous_evaluation_digest = raw_sha256(evaluation_path)
+        issues.append(target)
+        draws.append(actual)
+    if include_final_seal:
+        assert previous_target is not None
+        assert previous_evaluation_path is not None
+        assert previous_evaluation_digest is not None
+        final_seal = {
+            "schema_version": 2,
+            "evidence_status": FINAL_EVALUATION_SEAL_EVIDENCE_STATUS,
+            "freeze_id": FREEZE_ID,
+            "target_issue": previous_target,
+            "confirmation_index": CONFIRMATION_ISSUE_COUNT,
+            "evaluation_path": previous_evaluation_path.relative_to(root).as_posix(),
+            "evaluation_sha256": previous_evaluation_digest,
+            "seal_pr_number": 999,
+            "seal_pr_url": f"https://github.com/{GITHUB_REPOSITORY}/pull/999",
+            "seal_merge_commit_sha": "c" * 40,
+            "seal_merged_at_utc": "2028-01-01T00:00:00Z",
+            "remote_evaluation_anchor_verified": True,
+        }
+        (results / FINAL_EVALUATION_SEAL_FILENAME).write_bytes(
+            canonical_json_bytes(final_seal)
+        )
+    return (
+        manifests,
+        results,
+        np.asarray(issues, dtype=np.int64),
+        np.asarray(draws, dtype=np.int64),
+    )
+
+
+def test_completed_chain_requires_final_seal_and_official_data_match(
+    tmp_path: Path,
+) -> None:
+    root, _, _, _, _, _, config = _prepare_project(tmp_path)
+    manifests, results, issues, draws = _write_compact_completed_chain(
+        root, config, include_final_seal=False
+    )
+    with pytest.raises(ValueError, match="缺少final evaluation seal"):
+        monitor._validate_completed_chain(manifests, results, config, issues, draws)
+    last_target = int(issues[-1])
+    last_evaluation = results / f"{last_target}.json"
+    seal = {
+        "schema_version": 2,
+        "evidence_status": FINAL_EVALUATION_SEAL_EVIDENCE_STATUS,
+        "freeze_id": FREEZE_ID,
+        "target_issue": last_target,
+        "confirmation_index": CONFIRMATION_ISSUE_COUNT,
+        "evaluation_path": last_evaluation.relative_to(root).as_posix(),
+        "evaluation_sha256": raw_sha256(last_evaluation),
+        "seal_pr_number": 999,
+        "seal_pr_url": f"https://github.com/{GITHUB_REPOSITORY}/pull/999",
+        "seal_merge_commit_sha": "c" * 40,
+        "seal_merged_at_utc": "2028-01-01T00:00:00Z",
+        "remote_evaluation_anchor_verified": True,
+    }
+    (results / FINAL_EVALUATION_SEAL_FILENAME).write_bytes(canonical_json_bytes(seal))
+    (results / "formal_summary.json").write_bytes(
+        canonical_json_bytes({"fixture": True})
+    )
+    paired = monitor._validate_completed_chain(
+        manifests, results, config, issues, draws
+    )
+    assert len(paired) == CONFIRMATION_ISSUE_COUNT
+    changed_draws = draws.copy()
+    changed_draws[10] = np.arange(21, 41, dtype=np.int64)
+    with pytest.raises(ValueError, match="actual_numbers与正式输入数据不一致"):
+        monitor._validate_completed_chain(
+            manifests, results, config, issues, changed_draws
+        )
+    (results / "unexpected.json").write_bytes(canonical_json_bytes({"bad": True}))
+    with pytest.raises(ValueError, match="额外协议JSON"):
+        monitor._validate_completed_chain(manifests, results, config, issues, draws)
+
+
+def test_numeric_evaluation_enumeration_excludes_protocol_files(tmp_path: Path) -> None:
+    results = tmp_path / "results"
+    results.mkdir(exist_ok=True)
+    for name in ("2030001.json", FINAL_EVALUATION_SEAL_FILENAME, "formal_summary.json"):
+        (results / name).write_bytes(canonical_json_bytes({"name": name}))
+    assert [path.name for path in monitor._numeric_evaluation_paths(results)] == [
+        "2030001.json"
+    ]
 
 
 def _synthetic_manifest(target: int, issue_offset: int) -> dict[str, Any]:
@@ -671,7 +1106,11 @@ def test_complete_summary_recomputes_secondary_metrics_and_primary_family(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, _, _, _, _, _, config = _prepare_project(tmp_path)
-    paired: list[tuple[ManifestChainEntry, dict[str, Any]]] = []
+    paired: list[tuple[ManifestChainEntry, dict[str, Any], IntArray]] = []
+    results_dir = tmp_path / "results"
+    results_dir.mkdir(exist_ok=True)
+    official_issues: list[int] = []
+    official_draws: list[IntArray] = []
     for offset in range(CONFIRMATION_ISSUE_COUNT):
         target = 2030001 + offset
         manifest = _synthetic_manifest(target, offset)
@@ -689,15 +1128,21 @@ def test_complete_summary_recomputes_secondary_metrics_and_primary_family(
             "actual_numbers": sorted(map(int, actual)),
             "changepoint_state": "high_change" if offset % 5 == 0 else "normal",
             "models": metrics,
+            "comparisons": calculate_evaluation_comparisons(metrics),
         }
-        paired.append((entry, record))
+        (results_dir / f"{target}.json").write_bytes(canonical_json_bytes(record))
+        paired.append((entry, record, actual))
+        official_issues.append(target)
+        official_draws.append(actual)
     monkeypatch.setattr(
         monitor, "_validate_completed_chain", lambda *args: tuple(paired)
     )
     summary = build_formal_summary(
         manifest_dir=tmp_path / "manifests",
-        results_dir=tmp_path / "results",
+        results_dir=results_dir,
         config=config,
+        official_issues=np.asarray(official_issues, dtype=np.int64),
+        official_draws=np.asarray(official_draws, dtype=np.int64),
     )
     assert summary["issue_count"] == 365
     primary = cast(dict[str, Any], summary["primary_inference"])

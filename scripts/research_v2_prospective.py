@@ -19,12 +19,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.research_v2.prospective_monitor import (  # noqa: E402
     DATA_RELATIVE_PATH,
+    FINAL_EVALUATION_SEAL_FILENAME,
+    FORMAL_SUMMARY_FILENAME,
     FREEZE_RELATIVE_PATH,
     FROZEN_SOURCE_PATHS,
     MANIFEST_RELATIVE_DIR,
     RESULT_RELATIVE_DIR,
     GitHubSealClient,
     build_evaluation_record,
+    build_final_evaluation_seal,
     build_formal_summary,
     build_manifest,
     canonical_json_bytes,
@@ -34,6 +37,7 @@ from src.research_v2.prospective_monitor import (  # noqa: E402
     require_contract_path,
     utc_now_string,
     write_evaluation_exclusive,
+    write_final_evaluation_seal_exclusive,
     write_manifest_exclusive,
 )
 
@@ -95,7 +99,7 @@ def _find_gh_executable() -> str:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """解析三个严格分离的前瞻阶段操作。"""
+    """解析四个严格分离的前瞻阶段操作。"""
 
     parser = argparse.ArgumentParser(
         description="快乐8 v2 冻结模型的前瞻manifest与开奖后评价"
@@ -125,6 +129,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     evaluate.add_argument("--freeze", type=Path, default=FREEZE_RELATIVE_PATH)
     evaluate.add_argument("--manifest-dir", type=Path, default=MANIFEST_RELATIVE_DIR)
     evaluate.add_argument("--results-dir", type=Path, default=RESULT_RELATIVE_DIR)
+
+    finalize = subparsers.add_parser(
+        "finalize-evaluation", help="远程锚定没有下一份manifest的第365期evaluation"
+    )
+    finalize.add_argument("--target-issue", type=int, required=True)
+    finalize.add_argument("--evaluation-seal-pr-number", type=int, required=True)
 
     summary = subparsers.add_parser(
         "summary", help="仅在365期完整链完成后生成固定分块bootstrap汇总"
@@ -237,6 +247,9 @@ def _evaluate_command(
 
 
 def _summary_command(args: argparse.Namespace, project_root: Path) -> Path:
+    data_path = require_contract_path(
+        project_root, DATA_RELATIVE_PATH, DATA_RELATIVE_PATH, "正式数据路径"
+    )
     config_path = require_contract_path(
         project_root, args.freeze, FREEZE_RELATIVE_PATH, "冻结配置路径"
     )
@@ -247,15 +260,47 @@ def _summary_command(args: argparse.Namespace, project_root: Path) -> Path:
         project_root, args.results_dir, RESULT_RELATIVE_DIR, "前瞻结果目录"
     )
     config = _validated_active_config(project_root, config_path)
+    issues, draws = load_history_csv(data_path)
     summary = build_formal_summary(
-        manifest_dir=manifest_dir, results_dir=results_dir, config=config
+        manifest_dir=manifest_dir,
+        results_dir=results_dir,
+        config=config,
+        official_issues=issues,
+        official_draws=draws,
     )
-    output = results_dir / "formal_summary.json"
+    output = results_dir / FORMAL_SUMMARY_FILENAME
     try:
         with output.open("xb") as stream:
             stream.write(canonical_json_bytes(summary))
     except FileExistsError as exc:
         raise FileExistsError(f"正式汇总已存在，拒绝覆盖：{output}") from exc
+    return output
+
+
+def _finalize_evaluation_command(
+    args: argparse.Namespace,
+    project_root: Path,
+    *,
+    seal_client: GitHubSealClient | None = None,
+) -> Path:
+    config_path = require_contract_path(
+        project_root, FREEZE_RELATIVE_PATH, FREEZE_RELATIVE_PATH, "冻结配置路径"
+    )
+    results_dir = require_contract_path(
+        project_root, RESULT_RELATIVE_DIR, RESULT_RELATIVE_DIR, "前瞻结果目录"
+    )
+    _validated_active_config(project_root, config_path)
+    seal = build_final_evaluation_seal(
+        project_root=project_root,
+        config_path=config_path,
+        results_dir=results_dir,
+        target_issue=int(args.target_issue),
+        evaluation_seal_pr_number=int(args.evaluation_seal_pr_number),
+        seal_client=seal_client or GhCliSealClient(),
+    )
+    output = write_final_evaluation_seal_exclusive(seal, results_dir)
+    if output.name != FINAL_EVALUATION_SEAL_FILENAME:
+        raise RuntimeError("final evaluation seal输出路径漂移")
     return output
 
 
@@ -266,6 +311,8 @@ def run(argv: list[str] | None = None) -> int:
         output = _manifest_command(args, project_root)
     elif args.command == "evaluate":
         output = _evaluate_command(args, project_root)
+    elif args.command == "finalize-evaluation":
+        output = _finalize_evaluation_command(args, project_root)
     elif args.command == "summary":
         output = _summary_command(args, project_root)
     else:  # pragma: no cover - argparse已限制分支

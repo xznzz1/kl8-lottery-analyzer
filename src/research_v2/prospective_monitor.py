@@ -60,6 +60,7 @@ GITHUB_BASE_BRANCH = "scientific-model"
 MANIFEST_EVIDENCE_STATUS = "prospective_manifest_pending_remote_seal"
 EVALUATION_EVIDENCE_STATUS = "prospective_presealed_research"
 SUMMARY_EVIDENCE_STATUS = "completed_prospective_confirmation_summary"
+FINAL_EVALUATION_SEAL_EVIDENCE_STATUS = "final_evaluation_remote_anchor_verified"
 CONFIRMATION_ISSUE_COUNT = 365
 UNIFORM_STRATEGY = "uniform_random"
 UNIFORM_BASE_SEEDS = tuple(range(202601, 202621))
@@ -100,7 +101,10 @@ MANIFEST_RELATIVE_DIR = Path("reports/research_v2_prospective_manifests")
 RESULT_RELATIVE_DIR = Path("results/research_v2_prospective")
 FREEZE_RELATIVE_PATH = Path("config/research_v2_prospective_freeze.json")
 DATA_RELATIVE_PATH = Path("data_cache/kl8/data.csv")
+FINAL_EVALUATION_SEAL_FILENAME = "final_evaluation_seal.json"
+FORMAL_SUMMARY_FILENAME = "formal_summary.json"
 FROZEN_SOURCE_PATHS = (
+    ".gitattributes",
     "scripts/research_v2_prospective.py",
     "src/research_v2/bayesian.py",
     "src/research_v2/changepoint.py",
@@ -111,6 +115,7 @@ FROZEN_SOURCE_PATHS = (
 )
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+NUMERIC_EVALUATION_PATTERN = re.compile(r"^[1-9][0-9]*\.json$")
 
 
 @dataclass(frozen=True)
@@ -138,6 +143,10 @@ class ChainPosition:
     protocol_start_target_issue: int
     previous_target_issue: int | None
     previous_manifest_sha256: str | None
+    previous_evaluation_target_issue: int | None
+    previous_evaluation_confirmation_index: int | None
+    previous_evaluation_path: str | None
+    previous_evaluation_sha256: str | None
 
 
 @dataclass(frozen=True)
@@ -160,6 +169,18 @@ class RemoteSealEvidence:
     seal_merge_commit_sha: str
     seal_merged_at_utc: str
     manifest_sha256_at_merge: str
+    previous_evaluation_sha256_at_merge: str | None
+
+
+@dataclass(frozen=True)
+class RemoteFileAnchorEvidence:
+    """一个文件在固定仓库已合并 PR 中的远程原始字节锚点。"""
+
+    seal_pr_number: int
+    seal_pr_url: str
+    seal_merge_commit_sha: str
+    seal_merged_at_utc: str
+    file_sha256_at_merge: str
 
 
 @dataclass(frozen=True)
@@ -233,6 +254,22 @@ def configuration_fingerprint(config: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical_json_bytes(copied)).hexdigest()
 
 
+def _evaluation_payload_fingerprint(record: Mapping[str, object]) -> str:
+    copied = dict(record)
+    copied.pop("evaluation_payload_sha256", None)
+    return hashlib.sha256(canonical_json_bytes(copied)).hexdigest()
+
+
+def _validate_evaluation_payload_fingerprint(record: Mapping[str, object]) -> None:
+    configured = record.get("evaluation_payload_sha256")
+    if (
+        not isinstance(configured, str)
+        or not SHA256_PATTERN.fullmatch(configured)
+        or configured != _evaluation_payload_fingerprint(record)
+    ):
+        raise ValueError("evaluation内容SHA-256不匹配，文件已被修改")
+
+
 def _load_json_object(path: Path) -> dict[str, Any]:
     try:
         parsed: object = json.loads(path.read_text(encoding="utf-8"))
@@ -241,6 +278,27 @@ def _load_json_object(path: Path) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError(f"JSON顶层必须是对象：{path}")
     return cast(dict[str, Any], parsed)
+
+
+def _load_canonical_json_object(path: Path, label: str) -> dict[str, Any]:
+    """读取协议产物，并拒绝任何非规范或逐字节改写。"""
+
+    payload = _load_json_object(path)
+    if path.read_bytes() != canonical_json_bytes(payload):
+        raise ValueError(f"{label}原始字节不是规范不可变JSON")
+    return payload
+
+
+def _numeric_evaluation_paths(results_dir: Path) -> list[Path]:
+    """只枚举 ``<target_issue>.json``，排除final seal与summary。"""
+
+    if not results_dir.exists():
+        return []
+    return sorted(
+        path
+        for path in results_dir.iterdir()
+        if path.is_file() and NUMERIC_EVALUATION_PATTERN.fullmatch(path.name)
+    )
 
 
 def _require_mapping(value: object, label: str) -> dict[str, Any]:
@@ -378,6 +436,7 @@ def _validate_freeze_contract(config: Mapping[str, Any]) -> None:
         "confirmation_protocol",
         "manifest_policy",
         "evaluation_policy",
+        "summary_policy",
         "claim_boundary",
         "source_manifest",
     }
@@ -400,6 +459,7 @@ def _validate_freeze_contract(config: Mapping[str, Any]) -> None:
         raise ValueError("冻结配置SHA-256不匹配")
     if config.get("evidence_status") != {
         "evaluation_verified": EVALUATION_EVIDENCE_STATUS,
+        "final_evaluation_seal": FINAL_EVALUATION_SEAL_EVIDENCE_STATUS,
         "manifest_local": MANIFEST_EVIDENCE_STATUS,
         "summary_completed": SUMMARY_EVIDENCE_STATUS,
     }:
@@ -440,19 +500,32 @@ def _validate_freeze_contract(config: Mapping[str, Any]) -> None:
     if protocol != expected_protocol:
         raise ValueError("主要检验、Holm、次要指标或禁止提前停止契约漂移")
     if config.get("manifest_policy") != {
+        "continuity_rule": "previous_target_must_equal_current_data_latest_issue",
         "directory": MANIFEST_RELATIVE_DIR.as_posix(),
         "existing_manifest_policy": "refuse_overwrite_rewrite_or_delete",
+        "previous_evaluation_chain": "raw_sha256_and_independent_recalculation",
         "remote_claim_at_generation": False,
-        "sequence": "immutable_hash_chain_1_to_365",
+        "sequence": "immutable_manifest_and_evaluation_hash_chain_1_to_365",
     }:
         raise ValueError("manifest目录、哈希链或防覆盖策略漂移")
     if config.get("evaluation_policy") != {
         "directory": RESULT_RELATIVE_DIR.as_posix(),
         "duplicate_target_policy": "refuse_overwrite",
+        "final_evaluation_seal_filename": FINAL_EVALUATION_SEAL_FILENAME,
+        "local_creation_state": "remote_evaluation_anchor_pending",
+        "previous_evaluation_remote_anchor": "next_manifest_seal_pr",
         "record_format": "one_immutable_json_per_target_issue",
         "remote_verification": "github_merged_pr_fail_closed",
     }:
         raise ValueError("评价目录、防覆盖或远程验证策略漂移")
+    if config.get("summary_policy") != {
+        "data_path": DATA_RELATIVE_PATH.as_posix(),
+        "evaluation_enumeration": "numeric_target_issue_json_only",
+        "final_evaluation_anchor_required": True,
+        "formal_summary_filename": FORMAL_SUMMARY_FILENAME,
+        "official_data_recalculation_required": True,
+    }:
+        raise ValueError("正式summary数据复核、文件枚举或final seal策略漂移")
     if config.get("claim_boundary") != {
         "fair_lottery_note": "若彩票公平且独立，历史模型不应存在稳定预测优势。",
         "historical_v2_status": "exploratory_development_evidence",
@@ -670,7 +743,7 @@ def _load_manifest_chain(
     unsorted_paths = list(manifest_dir.glob("*.json")) if manifest_dir.exists() else []
     indexed_paths: list[tuple[int, Path]] = []
     for path in unsorted_paths:
-        payload = _load_json_object(path)
+        payload = _load_canonical_json_object(path, "manifest")
         index = payload.get("confirmation_index")
         if not isinstance(index, int):
             raise ValueError("manifest confirmation_index非法")
@@ -681,7 +754,7 @@ def _load_manifest_chain(
     previous_target: int | None = None
     previous_digest: str | None = None
     for expected_index, path in enumerate(paths, start=1):
-        payload = _load_json_object(path)
+        payload = _load_canonical_json_object(path, "manifest")
         index = payload.get("confirmation_index")
         target = payload.get("target_issue")
         if index != expected_index:
@@ -711,6 +784,14 @@ def _load_manifest_chain(
                 raise ValueError("首期previous_target_issue必须为null")
             if payload.get("previous_manifest_sha256") is not None:
                 raise ValueError("首期previous_manifest_sha256必须为null")
+            if payload.get("previous_evaluation_target_issue") is not None:
+                raise ValueError("首期previous_evaluation_target_issue必须为null")
+            if payload.get("previous_evaluation_confirmation_index") is not None:
+                raise ValueError("首期previous_evaluation_confirmation_index必须为null")
+            if payload.get("previous_evaluation_path") is not None:
+                raise ValueError("首期previous_evaluation_path必须为null")
+            if payload.get("previous_evaluation_sha256") is not None:
+                raise ValueError("首期previous_evaluation_sha256必须为null")
         else:
             if start != expected_start:
                 raise ValueError("protocol_start_target_issue发生漂移")
@@ -720,6 +801,24 @@ def _load_manifest_chain(
                 raise ValueError("manifest SHA-256链断裂")
             if previous_target is not None and target <= previous_target:
                 raise ValueError("manifest target_issue必须严格递增")
+            if payload.get("history_through_issue") != previous_target:
+                raise ValueError("后续manifest history_through_issue必须等于上一目标期")
+            if payload.get("previous_evaluation_target_issue") != previous_target:
+                raise ValueError("manifest上一evaluation target_issue链断裂")
+            if payload.get("previous_evaluation_confirmation_index") != (
+                expected_index - 1
+            ):
+                raise ValueError("manifest上一evaluation confirmation_index链断裂")
+            expected_evaluation_path = (
+                RESULT_RELATIVE_DIR / f"{previous_target}.json"
+            ).as_posix()
+            if payload.get("previous_evaluation_path") != expected_evaluation_path:
+                raise ValueError("manifest上一evaluation路径链断裂")
+            previous_evaluation_digest = payload.get("previous_evaluation_sha256")
+            if not isinstance(
+                previous_evaluation_digest, str
+            ) or not SHA256_PATTERN.fullmatch(previous_evaluation_digest):
+                raise ValueError("manifest上一evaluation SHA-256非法")
         digest = raw_sha256(path)
         entries.append(
             ManifestChainEntry(
@@ -737,14 +836,15 @@ def _load_manifest_chain(
 
 def _validate_prior_evaluations(
     entries: Sequence[ManifestChainEntry], results_dir: Path
-) -> None:
-    paths = sorted(results_dir.glob("*.json")) if results_dir.exists() else []
+) -> dict[int, tuple[Path, dict[str, Any]]]:
+    paths = _numeric_evaluation_paths(results_dir)
     expected_names = {f"{entry.target_issue}.json" for entry in entries}
     if {path.name for path in paths} != expected_names:
         raise ValueError("既有manifest与evaluation不一一对应，禁止继续")
     by_target = {entry.target_issue: entry for entry in entries}
+    validated: dict[int, tuple[Path, dict[str, Any]]] = {}
     for path in paths:
-        record = _load_json_object(path)
+        record = _load_canonical_json_object(path, "evaluation")
         target = record.get("target_issue")
         if not isinstance(target, int) or target not in by_target:
             raise ValueError("evaluation包含非法或额外target_issue")
@@ -764,26 +864,77 @@ def _validate_prior_evaluations(
             raise ValueError("既有evaluation freeze_id不匹配")
         if record.get("manifest_sha256_at_merge") != entry.sha256:
             raise ValueError("既有evaluation合并提交manifest SHA-256不匹配")
+        if record.get("evaluation_locally_created") is not True:
+            raise ValueError("既有evaluation缺少本地独占创建标记")
+        if record.get("remote_evaluation_anchor_pending") is not True:
+            raise ValueError("既有evaluation缺少待远程锚定标记")
+        validated[target] = (path, record)
+    for offset in range(1, len(entries)):
+        previous_entry = entries[offset - 1]
+        current_entry = entries[offset]
+        previous_path, _ = validated[previous_entry.target_issue]
+        _, current_record = validated[current_entry.target_issue]
+        previous_digest = raw_sha256(previous_path)
+        if current_entry.payload.get("previous_evaluation_sha256") != previous_digest:
+            raise ValueError("既有manifest记录的上一evaluation SHA-256不匹配")
+        if current_record.get("previous_evaluation_remote_anchor_verified") is not True:
+            raise ValueError("既有evaluation远程锚定链不完整")
+        expected_anchor = {
+            "target_issue": previous_entry.target_issue,
+            "confirmation_index": previous_entry.confirmation_index,
+            "path": (
+                RESULT_RELATIVE_DIR / f"{previous_entry.target_issue}.json"
+            ).as_posix(),
+            "sha256": previous_digest,
+            "sha256_at_merge": previous_digest,
+        }
+        if current_record.get("previous_evaluation_anchor") != expected_anchor:
+            raise ValueError("既有evaluation远程锚点与上一evaluation不一致")
+    return validated
 
 
 def next_chain_position(
     *,
+    project_root: Path,
     manifest_dir: Path,
     results_dir: Path,
     config: Mapping[str, Any],
     target_issue: int,
+    history_issues: IntArray,
+    history_draws: IntArray,
 ) -> ChainPosition:
-    """自动形成下一顺序位置；缺评价、断链、重复或超过365时拒绝。"""
+    """形成下一位置，并强制上一目标期是当前数据最新官方开奖。"""
 
     entries = _load_manifest_chain(manifest_dir, config)
     if len(entries) >= CONFIRMATION_ISSUE_COUNT:
         raise ValueError("365期确认链已满，拒绝生成额外manifest")
-    _validate_prior_evaluations(entries, results_dir)
+    evaluations = _validate_prior_evaluations(entries, results_dir)
     if not entries:
-        return ChainPosition(1, target_issue, None, None)
+        return ChainPosition(1, target_issue, None, None, None, None, None, None)
     previous = entries[-1]
     if target_issue <= previous.target_issue:
         raise ValueError("下一target_issue必须严格晚于上一记录")
+    latest_issue = int(history_issues[-1])
+    if latest_issue != previous.target_issue:
+        raise ValueError(
+            "上一目标期不是当前数据最新开奖，说明官方开奖链不连续；"
+            "同一freeze_id禁止跳过后恢复，必须建立新协议版本"
+        )
+    matches = np.flatnonzero(history_issues == previous.target_issue)
+    if len(matches) != 1:
+        raise ValueError("当前完整数据必须恰好包含一次上一目标期开奖")
+    previous_path, previous_record = evaluations[previous.target_issue]
+    official_actual = cast(IntArray, history_draws[int(matches[0])].copy())
+    if previous_record.get("actual_numbers") != sorted(map(int, official_actual)):
+        raise ValueError("上一evaluation actual_numbers与当前正式数据不一致")
+    recomputed_models = calculate_manifest_metrics(previous.payload, official_actual)
+    if previous_record.get("models") != recomputed_models:
+        raise ValueError("上一evaluation models无法从manifest和正式结果独立复算")
+    recomputed_comparisons = calculate_evaluation_comparisons(recomputed_models)
+    if previous_record.get("comparisons") != recomputed_comparisons:
+        raise ValueError("上一evaluation comparisons无法独立复算")
+    _validate_evaluation_payload_fingerprint(previous_record)
+    previous_evaluation_digest = raw_sha256(previous_path)
     return ChainPosition(
         confirmation_index=len(entries) + 1,
         protocol_start_target_issue=int(
@@ -791,6 +942,10 @@ def next_chain_position(
         ),
         previous_target_issue=previous.target_issue,
         previous_manifest_sha256=previous.sha256,
+        previous_evaluation_target_issue=previous.target_issue,
+        previous_evaluation_confirmation_index=previous.confirmation_index,
+        previous_evaluation_path=_relative_posix(project_root, previous_path),
+        previous_evaluation_sha256=previous_evaluation_digest,
     )
 
 
@@ -832,10 +987,13 @@ def build_manifest(
     )
     latest_issue = int(history_issues[-1])
     position = next_chain_position(
+        project_root=project_root,
         manifest_dir=manifest_dir,
         results_dir=results_dir,
         config=config,
         target_issue=target_issue,
+        history_issues=history_issues,
+        history_draws=history_draws,
     )
     prediction = predict_frozen_models(issues, draws, target_issue=target_issue)
 
@@ -875,7 +1033,7 @@ def build_manifest(
 
     if latest_issue != int(history_issues[-1]):
         raise RuntimeError("history_through_issue未使用输入数据最新期号")
-    return {
+    record: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "evidence_status": MANIFEST_EVIDENCE_STATUS,
         "remote_preseal_verified": False,
@@ -885,6 +1043,12 @@ def build_manifest(
         "protocol_start_target_issue": position.protocol_start_target_issue,
         "previous_target_issue": position.previous_target_issue,
         "previous_manifest_sha256": position.previous_manifest_sha256,
+        "previous_evaluation_target_issue": (position.previous_evaluation_target_issue),
+        "previous_evaluation_confirmation_index": (
+            position.previous_evaluation_confirmation_index
+        ),
+        "previous_evaluation_path": position.previous_evaluation_path,
+        "previous_evaluation_sha256": position.previous_evaluation_sha256,
         "target_issue": target_issue,
         "local_manifest_generated_at_utc": generated_text,
         "history_through_issue": latest_issue,
@@ -924,6 +1088,7 @@ def build_manifest(
         },
         "models": model_payload,
     }
+    return record
 
 
 def write_manifest_exclusive(
@@ -1059,6 +1224,44 @@ def calculate_manifest_metrics(
     return model_metrics
 
 
+def calculate_evaluation_comparisons(
+    metrics: Mapping[str, object],
+) -> dict[str, object]:
+    """从五模型逐期指标确定性复算所有预注册差值。"""
+
+    uniform_metrics = _require_mapping(metrics[UNIFORM_STRATEGY], UNIFORM_STRATEGY)
+    uniform_brier = float(uniform_metrics["brier_score"])
+    uniform_log_loss = float(uniform_metrics["bernoulli_log_loss"])
+    versus_uniform: dict[str, object] = {}
+    for strategy in PRIMARY_COMPARISON_MODELS:
+        model = _require_mapping(metrics[strategy], strategy)
+        versus_uniform[strategy] = {
+            "brier_difference_model_minus_uniform": (
+                float(model["brier_score"]) - uniform_brier
+            ),
+            "log_loss_difference_model_minus_uniform": (
+                float(model["bernoulli_log_loss"]) - uniform_log_loss
+            ),
+        }
+    changepoint = _require_mapping(metrics[CHANGEPOINT_STRATEGY], CHANGEPOINT_STRATEGY)
+    versus_fixed: dict[str, object] = {}
+    for strategy in (FIXED_NORMAL_STRATEGY, FIXED_HIGH_STRATEGY):
+        fixed = _require_mapping(metrics[strategy], strategy)
+        versus_fixed[strategy] = {
+            "brier_difference_changepoint_minus_fixed": (
+                float(changepoint["brier_score"]) - float(fixed["brier_score"])
+            ),
+            "log_loss_difference_changepoint_minus_fixed": (
+                float(changepoint["bernoulli_log_loss"])
+                - float(fixed["bernoulli_log_loss"])
+            ),
+        }
+    return {
+        "versus_uniform": versus_uniform,
+        "changepoint_versus_fixed_baselines": versus_fixed,
+    }
+
+
 def verify_remote_preseal(
     *,
     client: GitHubSealClient,
@@ -1068,6 +1271,9 @@ def verify_remote_preseal(
     manifest_path: Path,
     manifest_repository_path: str,
     official_result_published_at_utc: str,
+    previous_evaluation_path: Path | None = None,
+    previous_evaluation_repository_path: str | None = None,
+    previous_evaluation_expected_sha256: str | None = None,
 ) -> RemoteSealEvidence:
     """通过GitHub API验证合并时文件原始字节，任一失败都抛错。"""
 
@@ -1109,6 +1315,29 @@ def verify_remote_preseal(
     remote_digest = hashlib.sha256(remote_bytes).hexdigest()
     if remote_digest != local_digest:
         raise ValueError("合并提交中的manifest SHA-256与本地文件不符")
+    previous_digest_at_merge: str | None = None
+    previous_values = (
+        previous_evaluation_path,
+        previous_evaluation_repository_path,
+        previous_evaluation_expected_sha256,
+    )
+    if any(value is not None for value in previous_values):
+        if not all(value is not None for value in previous_values):
+            raise ValueError("上一evaluation远程锚定参数不完整")
+        assert previous_evaluation_path is not None
+        assert previous_evaluation_repository_path is not None
+        assert previous_evaluation_expected_sha256 is not None
+        if raw_sha256(previous_evaluation_path) != previous_evaluation_expected_sha256:
+            raise ValueError("上一evaluation本地SHA-256与当前manifest记录不符")
+        try:
+            previous_remote_bytes = client.get_file_bytes(
+                repository, previous_evaluation_repository_path, merge_commit
+            )
+        except Exception as exc:
+            raise RuntimeError("合并提交不含上一evaluation或GitHub API不可用") from exc
+        previous_digest_at_merge = hashlib.sha256(previous_remote_bytes).hexdigest()
+        if previous_digest_at_merge != previous_evaluation_expected_sha256:
+            raise ValueError("合并提交中的上一evaluation SHA-256不匹配")
     url = metadata.get("url")
     if not isinstance(url, str) or not url.startswith("https://github.com/"):
         raise ValueError("seal PR URL非法")
@@ -1118,7 +1347,147 @@ def verify_remote_preseal(
         seal_merge_commit_sha=merge_commit,
         seal_merged_at_utc=merged_text,
         manifest_sha256_at_merge=remote_digest,
+        previous_evaluation_sha256_at_merge=previous_digest_at_merge,
     )
+
+
+def verify_remote_file_anchor(
+    *,
+    client: GitHubSealClient,
+    repository: str,
+    base_branch: str,
+    pr_number: int,
+    local_path: Path,
+    repository_path: str,
+) -> RemoteFileAnchorEvidence:
+    """验证任一协议文件原始字节存在于固定仓库已合并PR。"""
+
+    if pr_number <= 0:
+        raise ValueError("evaluation_seal_pr_number必须为正整数")
+    try:
+        metadata = client.get_pull_request(repository, pr_number)
+    except Exception as exc:
+        raise RuntimeError("GitHub API不可用，final evaluation seal失败") from exc
+    if metadata.get("repository") != repository:
+        raise ValueError("final seal PR不属于冻结GitHub仓库")
+    if metadata.get("number") != pr_number:
+        raise ValueError("GitHub返回的final seal PR编号不匹配")
+    if metadata.get("state") != "MERGED":
+        raise ValueError("final seal PR尚未合并")
+    if metadata.get("baseRefName") != base_branch:
+        raise ValueError("final seal PR base分支错误")
+    merged_at = metadata.get("mergedAt")
+    if not isinstance(merged_at, str):
+        raise ValueError("final seal PR缺少合并时间")
+    merged_text, _ = _canonical_utc(merged_at, "final_seal_merged_at_utc")
+    merge_commit = metadata.get("mergeCommit")
+    if isinstance(merge_commit, dict):
+        merge_commit = merge_commit.get("oid")
+    if not isinstance(merge_commit, str) or not GIT_SHA_PATTERN.fullmatch(merge_commit):
+        raise ValueError("final seal PR缺少合法合并提交SHA")
+    try:
+        remote_bytes = client.get_file_bytes(repository, repository_path, merge_commit)
+    except Exception as exc:
+        raise RuntimeError(
+            "final seal合并提交不含第365期evaluation或GitHub API不可用"
+        ) from exc
+    local_digest = raw_sha256(local_path)
+    remote_digest = hashlib.sha256(remote_bytes).hexdigest()
+    if remote_digest != local_digest:
+        raise ValueError("final seal合并提交中的evaluation SHA-256与本地不符")
+    url = metadata.get("url")
+    if not isinstance(url, str) or not url.startswith("https://github.com/"):
+        raise ValueError("final seal PR URL非法")
+    return RemoteFileAnchorEvidence(
+        seal_pr_number=pr_number,
+        seal_pr_url=url,
+        seal_merge_commit_sha=merge_commit,
+        seal_merged_at_utc=merged_text,
+        file_sha256_at_merge=remote_digest,
+    )
+
+
+def build_final_evaluation_seal(
+    *,
+    project_root: Path,
+    config_path: Path,
+    results_dir: Path,
+    target_issue: int,
+    evaluation_seal_pr_number: int,
+    seal_client: GitHubSealClient,
+) -> dict[str, object]:
+    """为没有下一份manifest的第365期evaluation形成最终远程锚点。"""
+
+    config = load_and_verify_freeze_config(project_root, config_path)
+    if config.get("freeze_status") != FREEZE_ACTIVE:
+        raise RuntimeError("冻结配置仍为pending，拒绝finalize evaluation")
+    paths = _numeric_evaluation_paths(results_dir)
+    if len(paths) != CONFIRMATION_ISSUE_COUNT:
+        raise ValueError("finalize前必须恰好存在365份逐期evaluation")
+    evaluation_path = results_dir / f"{target_issue}.json"
+    if evaluation_path not in paths:
+        raise ValueError("finalize目标evaluation不存在")
+    evaluation = _load_canonical_json_object(evaluation_path, "第365期evaluation")
+    if evaluation.get("target_issue") != target_issue:
+        raise ValueError("finalize target_issue与evaluation不一致")
+    if evaluation.get("confirmation_index") != CONFIRMATION_ISSUE_COUNT:
+        raise ValueError("finalize只允许第365期evaluation")
+    if evaluation.get("freeze_id") != FREEZE_ID:
+        raise ValueError("第365期evaluation freeze_id不匹配")
+    if evaluation.get("evidence_status") != EVALUATION_EVIDENCE_STATUS:
+        raise ValueError("第365期evaluation证据状态不匹配")
+    if evaluation.get("remote_preseal_verified") is not True:
+        raise ValueError("第365期manifest未通过开奖前远程封存")
+    if evaluation.get("sealed_before_official_result") is not True:
+        raise ValueError("第365期manifest不是开奖前远程封存")
+    if evaluation.get("evaluation_locally_created") is not True:
+        raise ValueError("第365期evaluation缺少本地创建标记")
+    if evaluation.get("remote_evaluation_anchor_pending") is not True:
+        raise ValueError("第365期evaluation不处于待远程锚定状态")
+    _validate_evaluation_payload_fingerprint(evaluation)
+    repository_path = _relative_posix(project_root, evaluation_path)
+    github = _require_mapping(config["github"], "github")
+    anchor = verify_remote_file_anchor(
+        client=seal_client,
+        repository=str(github["repository"]),
+        base_branch=str(github["base_branch"]),
+        pr_number=evaluation_seal_pr_number,
+        local_path=evaluation_path,
+        repository_path=repository_path,
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "evidence_status": FINAL_EVALUATION_SEAL_EVIDENCE_STATUS,
+        "freeze_id": FREEZE_ID,
+        "target_issue": target_issue,
+        "confirmation_index": CONFIRMATION_ISSUE_COUNT,
+        "evaluation_path": repository_path,
+        "evaluation_sha256": raw_sha256(evaluation_path),
+        "seal_pr_number": anchor.seal_pr_number,
+        "seal_pr_url": anchor.seal_pr_url,
+        "seal_merge_commit_sha": anchor.seal_merge_commit_sha,
+        "seal_merged_at_utc": anchor.seal_merged_at_utc,
+        "remote_evaluation_anchor_verified": True,
+    }
+
+
+def write_final_evaluation_seal_exclusive(
+    seal: Mapping[str, object], results_dir: Path
+) -> Path:
+    """独占写入第365期final evaluation seal。"""
+
+    if seal.get("remote_evaluation_anchor_verified") is not True:
+        raise ValueError("未通过远程锚定验证的final seal不得写入")
+    results_dir.mkdir(parents=True, exist_ok=True)
+    path = results_dir / FINAL_EVALUATION_SEAL_FILENAME
+    try:
+        with path.open("xb") as stream:
+            stream.write(canonical_json_bytes(seal))
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError as exc:
+        raise FileExistsError(f"final evaluation seal已存在，拒绝覆盖：{path}") from exc
+    return path
 
 
 def build_evaluation_record(
@@ -1161,6 +1530,9 @@ def build_evaluation_record(
     ]
     if len(matching_entries) != 1:
         raise ValueError("待评价manifest不在完整有效的365期顺序链中")
+    confirmation_index = manifest.get("confirmation_index")
+    if not isinstance(confirmation_index, int):
+        raise ValueError("manifest confirmation_index非法")
     published_text, published_time = _canonical_utc(
         official_result_published_at_utc, "official_result_published_at_utc"
     )
@@ -1170,6 +1542,21 @@ def build_evaluation_record(
     if evaluated_time < published_time:
         raise ValueError("评价时间不得早于官方结果发布时间")
     repository_path = _relative_posix(project_root, resolved_manifest)
+    previous_evaluation_path: Path | None = None
+    previous_evaluation_repository_path: str | None = None
+    previous_evaluation_sha256: str | None = None
+    if confirmation_index > 1:
+        raw_previous_path = manifest.get("previous_evaluation_path")
+        raw_previous_sha = manifest.get("previous_evaluation_sha256")
+        if not isinstance(raw_previous_path, str) or not isinstance(
+            raw_previous_sha, str
+        ):
+            raise ValueError("当前manifest缺少上一evaluation锚定字段")
+        previous_evaluation_path = resolve_within(
+            project_root, Path(raw_previous_path), "上一evaluation"
+        )
+        previous_evaluation_repository_path = raw_previous_path
+        previous_evaluation_sha256 = raw_previous_sha
     github = _require_mapping(config["github"], "github")
     seal = verify_remote_preseal(
         client=seal_client,
@@ -1179,36 +1566,13 @@ def build_evaluation_record(
         manifest_path=resolved_manifest,
         manifest_repository_path=repository_path,
         official_result_published_at_utc=published_text,
+        previous_evaluation_path=previous_evaluation_path,
+        previous_evaluation_repository_path=previous_evaluation_repository_path,
+        previous_evaluation_expected_sha256=previous_evaluation_sha256,
     )
     numbers = cast(IntArray, np.asarray(actual_numbers, dtype=np.int64))
     metrics = calculate_manifest_metrics(manifest, numbers)
-    uniform_metrics = _require_mapping(metrics[UNIFORM_STRATEGY], UNIFORM_STRATEGY)
-    uniform_brier = float(uniform_metrics["brier_score"])
-    uniform_log_loss = float(uniform_metrics["bernoulli_log_loss"])
-    versus_uniform: dict[str, object] = {}
-    for strategy in PRIMARY_COMPARISON_MODELS:
-        model = _require_mapping(metrics[strategy], strategy)
-        versus_uniform[strategy] = {
-            "brier_difference_model_minus_uniform": (
-                float(model["brier_score"]) - uniform_brier
-            ),
-            "log_loss_difference_model_minus_uniform": (
-                float(model["bernoulli_log_loss"]) - uniform_log_loss
-            ),
-        }
-    changepoint = _require_mapping(metrics[CHANGEPOINT_STRATEGY], CHANGEPOINT_STRATEGY)
-    versus_fixed: dict[str, object] = {}
-    for strategy in (FIXED_NORMAL_STRATEGY, FIXED_HIGH_STRATEGY):
-        fixed = _require_mapping(metrics[strategy], strategy)
-        versus_fixed[strategy] = {
-            "brier_difference_changepoint_minus_fixed": (
-                float(changepoint["brier_score"]) - float(fixed["brier_score"])
-            ),
-            "log_loss_difference_changepoint_minus_fixed": (
-                float(changepoint["bernoulli_log_loss"])
-                - float(fixed["bernoulli_log_loss"])
-            ),
-        }
+    comparisons = calculate_evaluation_comparisons(metrics)
     selected = _require_mapping(
         manifest.get("selected_target_prior_parameters"),
         "selected_target_prior_parameters",
@@ -1216,7 +1580,7 @@ def build_evaluation_record(
     changepoint_selected = _require_mapping(
         selected.get(CHANGEPOINT_STRATEGY), CHANGEPOINT_STRATEGY
     )
-    return {
+    record: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "evidence_status": EVALUATION_EVIDENCE_STATUS,
         "freeze_id": FREEZE_ID,
@@ -1226,6 +1590,8 @@ def build_evaluation_record(
         "official_result_source_url": official_result_source_url,
         "official_result_published_at_utc": published_text,
         "actual_numbers": sorted(map(int, numbers)),
+        "evaluation_locally_created": True,
+        "remote_evaluation_anchor_pending": True,
         "remote_preseal_verified": True,
         "sealed_before_official_result": True,
         "seal_pr_number": seal.seal_pr_number,
@@ -1233,6 +1599,22 @@ def build_evaluation_record(
         "seal_merge_commit_sha": seal.seal_merge_commit_sha,
         "seal_merged_at_utc": seal.seal_merged_at_utc,
         "manifest_sha256_at_merge": seal.manifest_sha256_at_merge,
+        "previous_evaluation_remote_anchor_verified": (
+            True if confirmation_index > 1 else None
+        ),
+        "previous_evaluation_anchor": (
+            {
+                "target_issue": manifest["previous_evaluation_target_issue"],
+                "confirmation_index": manifest[
+                    "previous_evaluation_confirmation_index"
+                ],
+                "path": previous_evaluation_repository_path,
+                "sha256": previous_evaluation_sha256,
+                "sha256_at_merge": seal.previous_evaluation_sha256_at_merge,
+            }
+            if confirmation_index > 1
+            else None
+        ),
         "manifest": {
             "path": repository_path,
             "sha256": raw_sha256(resolved_manifest),
@@ -1242,11 +1624,10 @@ def build_evaluation_record(
         },
         "changepoint_state": changepoint_selected.get("state"),
         "models": metrics,
-        "comparisons": {
-            "versus_uniform": versus_uniform,
-            "changepoint_versus_fixed_baselines": versus_fixed,
-        },
+        "comparisons": comparisons,
     }
+    record["evaluation_payload_sha256"] = _evaluation_payload_fingerprint(record)
+    return record
 
 
 def write_evaluation_exclusive(record: Mapping[str, object], results_dir: Path) -> Path:
@@ -1331,20 +1712,39 @@ def moving_block_bootstrap_inference(values: FloatArray) -> BootstrapInference:
 
 
 def _validate_completed_chain(
-    manifest_dir: Path, results_dir: Path, config: Mapping[str, Any]
-) -> tuple[tuple[ManifestChainEntry, dict[str, Any]], ...]:
+    manifest_dir: Path,
+    results_dir: Path,
+    config: Mapping[str, Any],
+    official_issues: IntArray,
+    official_draws: IntArray,
+) -> tuple[tuple[ManifestChainEntry, dict[str, Any], IntArray], ...]:
+    issue_values, draw_values = validate_issue_draws(official_issues, official_draws)
     entries = _load_manifest_chain(manifest_dir, config)
     if len(entries) != CONFIRMATION_ISSUE_COUNT:
         raise ValueError("正式汇总必须恰好包含365份manifest")
-    paths = sorted(results_dir.glob("*.json")) if results_dir.exists() else []
+    paths = _numeric_evaluation_paths(results_dir)
     expected_names = {f"{entry.target_issue}.json" for entry in entries}
     if (
         len(paths) != CONFIRMATION_ISSUE_COUNT
         or {path.name for path in paths} != expected_names
     ):
         raise ValueError("正式汇总必须恰好包含365份一一对应的evaluation")
-    records = {path.stem: _load_json_object(path) for path in paths}
-    paired: list[tuple[ManifestChainEntry, dict[str, Any]]] = []
+    allowed_non_evaluation = {
+        FINAL_EVALUATION_SEAL_FILENAME,
+        FORMAL_SUMMARY_FILENAME,
+    }
+    all_json_names = (
+        {path.name for path in results_dir.glob("*.json")}
+        if results_dir.exists()
+        else set()
+    )
+    unexpected = all_json_names - expected_names - allowed_non_evaluation
+    if unexpected:
+        raise ValueError("结果目录包含额外协议JSON文件")
+    records = {
+        path.stem: _load_canonical_json_object(path, "evaluation") for path in paths
+    }
+    paired: list[tuple[ManifestChainEntry, dict[str, Any], IntArray]] = []
     for entry in entries:
         record = records[str(entry.target_issue)]
         if record.get("target_issue") != entry.target_issue:
@@ -1359,12 +1759,96 @@ def _validate_completed_chain(
             raise ValueError("evaluation未通过远程封存验证")
         if record.get("sealed_before_official_result") is not True:
             raise ValueError("evaluation不是开奖前远程封存")
+        if record.get("evaluation_locally_created") is not True:
+            raise ValueError("evaluation缺少本地独占创建标记")
+        if record.get("remote_evaluation_anchor_pending") is not True:
+            raise ValueError("evaluation缺少待远程锚定标记")
+        _validate_evaluation_payload_fingerprint(record)
         manifest_info = _require_mapping(record.get("manifest"), "evaluation.manifest")
         if manifest_info.get("sha256") != entry.sha256:
             raise ValueError("evaluation记录的manifest SHA与真实文件不一致")
         if record.get("manifest_sha256_at_merge") != entry.sha256:
             raise ValueError("合并提交manifest SHA与真实文件不一致")
-        paired.append((entry, record))
+        matches = np.flatnonzero(issue_values == entry.target_issue)
+        if len(matches) != 1:
+            raise ValueError("正式数据中365个目标期必须各恰好出现一次")
+        official_actual = cast(IntArray, draw_values[int(matches[0])].copy())
+        if record.get("actual_numbers") != sorted(map(int, official_actual)):
+            raise ValueError("evaluation actual_numbers与正式输入数据不一致")
+        paired.append((entry, record, official_actual))
+
+    for offset in range(CONFIRMATION_ISSUE_COUNT - 1):
+        entry, _, _ = paired[offset]
+        next_entry, next_record, _ = paired[offset + 1]
+        evaluation_path = results_dir / f"{entry.target_issue}.json"
+        evaluation_digest = raw_sha256(evaluation_path)
+        expected_path = (RESULT_RELATIVE_DIR / f"{entry.target_issue}.json").as_posix()
+        next_manifest = next_entry.payload
+        if next_manifest.get("previous_evaluation_target_issue") != entry.target_issue:
+            raise ValueError("下一manifest未锚定上一evaluation target_issue")
+        if next_manifest.get("previous_evaluation_confirmation_index") != (
+            entry.confirmation_index
+        ):
+            raise ValueError("下一manifest未锚定上一evaluation confirmation_index")
+        if next_manifest.get("previous_evaluation_path") != expected_path:
+            raise ValueError("下一manifest未锚定上一evaluation路径")
+        if next_manifest.get("previous_evaluation_sha256") != evaluation_digest:
+            raise ValueError("下一manifest记录的上一evaluation SHA-256不匹配")
+        if next_record.get("previous_evaluation_remote_anchor_verified") is not True:
+            raise ValueError("上一evaluation未由下一manifest seal PR远程锚定")
+        anchor = _require_mapping(
+            next_record.get("previous_evaluation_anchor"),
+            "previous_evaluation_anchor",
+        )
+        if anchor != {
+            "target_issue": entry.target_issue,
+            "confirmation_index": entry.confirmation_index,
+            "path": expected_path,
+            "sha256": evaluation_digest,
+            "sha256_at_merge": evaluation_digest,
+        }:
+            raise ValueError("下一manifest seal PR的上一evaluation远程锚点不匹配")
+
+    final_entry, _, _ = paired[-1]
+    final_evaluation_path = results_dir / f"{final_entry.target_issue}.json"
+    final_digest = raw_sha256(final_evaluation_path)
+    final_seal_path = results_dir / FINAL_EVALUATION_SEAL_FILENAME
+    if not final_seal_path.is_file():
+        raise ValueError("第365期evaluation缺少final evaluation seal")
+    final_seal = _load_canonical_json_object(final_seal_path, "final evaluation seal")
+    if final_seal.get("evidence_status") != FINAL_EVALUATION_SEAL_EVIDENCE_STATUS:
+        raise ValueError("final evaluation seal证据状态不匹配")
+    if final_seal.get("freeze_id") != FREEZE_ID:
+        raise ValueError("final evaluation seal freeze_id不匹配")
+    if final_seal.get("target_issue") != final_entry.target_issue:
+        raise ValueError("final evaluation seal target_issue不匹配")
+    if final_seal.get("confirmation_index") != CONFIRMATION_ISSUE_COUNT:
+        raise ValueError("final evaluation seal confirmation_index不匹配")
+    expected_final_path = (
+        RESULT_RELATIVE_DIR / f"{final_entry.target_issue}.json"
+    ).as_posix()
+    if final_seal.get("evaluation_path") != expected_final_path:
+        raise ValueError("final evaluation seal路径不匹配")
+    if final_seal.get("evaluation_sha256") != final_digest:
+        raise ValueError("final evaluation seal SHA-256与第365期evaluation不匹配")
+    if final_seal.get("remote_evaluation_anchor_verified") is not True:
+        raise ValueError("第365期evaluation未通过最终远程锚定")
+    if (
+        not isinstance(final_seal.get("seal_pr_number"), int)
+        or int(final_seal["seal_pr_number"]) <= 0
+    ):
+        raise ValueError("final evaluation seal PR编号非法")
+    if not isinstance(final_seal.get("seal_pr_url"), str) or not str(
+        final_seal["seal_pr_url"]
+    ).startswith("https://github.com/"):
+        raise ValueError("final evaluation seal PR URL非法")
+    merge_sha = final_seal.get("seal_merge_commit_sha")
+    if not isinstance(merge_sha, str) or not GIT_SHA_PATTERN.fullmatch(merge_sha):
+        raise ValueError("final evaluation seal合并提交SHA非法")
+    merged_at = final_seal.get("seal_merged_at_utc")
+    if not isinstance(merged_at, str):
+        raise ValueError("final evaluation seal缺少合并时间")
+    _canonical_utc(merged_at, "final evaluation seal合并时间")
     return tuple(paired)
 
 
@@ -1391,14 +1875,21 @@ def _serialize_calibration(
 
 
 def build_formal_summary(
-    *, manifest_dir: Path, results_dir: Path, config: Mapping[str, Any]
+    *,
+    manifest_dir: Path,
+    results_dir: Path,
+    config: Mapping[str, Any],
+    official_issues: IntArray,
+    official_draws: IntArray,
 ) -> dict[str, object]:
     """验证完整365期链，并独立复算主要与全部次要指标。"""
 
     _validate_freeze_contract(config)
     if config.get("freeze_status") != FREEZE_ACTIVE:
         raise RuntimeError("冻结配置仍为pending，拒绝正式summary")
-    paired = _validate_completed_chain(manifest_dir, results_dir, config)
+    paired = _validate_completed_chain(
+        manifest_dir, results_dir, config, official_issues, official_draws
+    )
     probabilities: dict[str, list[FloatArray]] = {
         strategy: [] for strategy in PROBABILITY_STRATEGIES
     }
@@ -1418,16 +1909,15 @@ def build_formal_summary(
         FIXED_NORMAL_STRATEGY: {"brier": [], "log_loss": []},
         FIXED_HIGH_STRATEGY: {"brier": [], "log_loss": []},
     }
-    for entry, record in paired:
-        actual = cast(
-            IntArray, np.asarray(record.get("actual_numbers"), dtype=np.int64)
-        )
+    for entry, record, actual in paired:
         outcome = _outcomes(actual, entry.target_issue)
         outcomes.append(outcome)
         model_probabilities, _, _ = _manifest_model_arrays(entry.payload)
         recomputed = calculate_manifest_metrics(entry.payload, actual)
         if record.get("models") != recomputed:
             raise ValueError("evaluation指标不能从manifest和实际结果独立复算")
+        if record.get("comparisons") != calculate_evaluation_comparisons(recomputed):
+            raise ValueError("evaluation comparisons不能从正式数据独立复算")
         for strategy in PROBABILITY_STRATEGIES:
             probabilities[strategy].append(model_probabilities[strategy])
             metrics = _require_mapping(recomputed[strategy], strategy)
@@ -1453,6 +1943,9 @@ def build_formal_summary(
                 "confirmation_index": entry.confirmation_index,
                 "target_issue": entry.target_issue,
                 "manifest_sha256": entry.sha256,
+                "evaluation_sha256": raw_sha256(
+                    results_dir / f"{entry.target_issue}.json"
+                ),
             }
         )
 
@@ -1551,6 +2044,8 @@ __all__ = [
     "DATA_RELATIVE_PATH",
     "DYNAMIC_STRATEGY",
     "EVALUATION_EVIDENCE_STATUS",
+    "FINAL_EVALUATION_SEAL_EVIDENCE_STATUS",
+    "FINAL_EVALUATION_SEAL_FILENAME",
     "FIXED_HIGH_STRATEGY",
     "FIXED_NORMAL_STRATEGY",
     "FREEZE_ACTIVE",
@@ -1558,6 +2053,7 @@ __all__ = [
     "FREEZE_PENDING",
     "FREEZE_RELATIVE_PATH",
     "FREEZE_TAG",
+    "FORMAL_SUMMARY_FILENAME",
     "FROZEN_SOURCE_PATHS",
     "GITHUB_BASE_BRANCH",
     "GITHUB_REPOSITORY",
@@ -1575,10 +2071,13 @@ __all__ = [
     "GitHubSealClient",
     "ProspectivePrediction",
     "RemoteSealEvidence",
+    "RemoteFileAnchorEvidence",
     "build_evaluation_record",
+    "build_final_evaluation_seal",
     "build_formal_summary",
     "build_manifest",
     "calculate_manifest_metrics",
+    "calculate_evaluation_comparisons",
     "canonical_history_sha256",
     "canonical_json_bytes",
     "configuration_fingerprint",
@@ -1598,6 +2097,8 @@ __all__ = [
     "utc_now_string",
     "validate_unpublished_target",
     "verify_remote_preseal",
+    "verify_remote_file_anchor",
     "write_evaluation_exclusive",
+    "write_final_evaluation_seal_exclusive",
     "write_manifest_exclusive",
 ]
