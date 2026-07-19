@@ -1,0 +1,2 @@
+reports/research_v2_prospective_manifests/*.json -text
+results/research_v2_prospective/*.json -text

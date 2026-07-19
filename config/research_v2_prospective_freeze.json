@@ -1,0 +1,169 @@
+{
+  "schema_version": 2,
+  "freeze_id": "kl8-v2-prospective-365-v1",
+  "freeze_status": "research_model_and_protocol_frozen_pending_code_audit",
+  "freeze_tag": "kl8-v2-prospective-365-v1",
+  "configuration_sha256": "bc2be81190c519d7eb4d7300c1566991fd9393f4f0ab5fc3252a50ac1b369b92",
+  "evidence_status": {
+    "evaluation_verified": "prospective_presealed_research",
+    "final_evaluation_seal": "final_evaluation_remote_anchor_verified",
+    "manifest_local": "prospective_manifest_pending_remote_seal",
+    "summary_completed": "completed_prospective_confirmation_summary"
+  },
+  "confirmation_issue_count": 365,
+  "github": {
+    "base_branch": "scientific-model",
+    "repository": "xznzz1/kl8-lottery-analyzer"
+  },
+  "models": {
+    "uniform_random": {
+      "base_seeds": [
+        202601,
+        202602,
+        202603,
+        202604,
+        202605,
+        202606,
+        202607,
+        202608,
+        202609,
+        202610,
+        202611,
+        202612,
+        202613,
+        202614,
+        202615,
+        202616,
+        202617,
+        202618,
+        202619,
+        202620
+      ],
+      "probability": 0.25,
+      "ranking_method": "sha256_seeded_numpy_permutation",
+      "seed_material_format": "kl8-v2-prospective-365-v1|<target_issue>|<base_seed>",
+      "seed_integer_derivation": "sha256_first_8_bytes_unsigned_big_endian",
+      "top_k_aggregation": "within_issue_mean_over_20_seeds"
+    },
+    "dynamic_bayesian": {
+      "decay_grid": [
+        0.97,
+        0.99,
+        0.995
+      ],
+      "minimum_initial_history": 365,
+      "minimum_inner_observations": 120,
+      "parameter_selection": "target_prior_inner_mean_brier_argmin_preregistered_grid_order_tiebreak",
+      "prior_strength_grid": [
+        5.0,
+        20.0,
+        80.0
+      ]
+    },
+    "fixed_normal_bayesian": {
+      "decay": 0.995,
+      "history": "all_target_prior_history",
+      "prior_strength": 80.0
+    },
+    "fixed_high_bayesian": {
+      "decay": 0.95,
+      "history": "last_120_target_prior_issues",
+      "prior_strength": 80.0
+    },
+    "changepoint_bayesian": {
+      "change_quantile": 0.9,
+      "fixed_high_model": "fixed_high_bayesian",
+      "fixed_normal_model": "fixed_normal_bayesian",
+      "minimum_effective_history": 120,
+      "recent_window_grid": [
+        30,
+        60,
+        120
+      ],
+      "reference_window": 240,
+      "selection_metric": "inner_mean_brier",
+      "threshold_training": "target_prior_change_scores_only"
+    }
+  },
+  "confirmation_protocol": {
+    "bootstrap": {
+      "alternative": "mean_model_minus_uniform_brier_less_than_zero",
+      "block_length": 30,
+      "method": "circular_moving_block_bootstrap",
+      "resample_count": 20000,
+      "seed": 20260717
+    },
+    "early_success_claims_forbidden": true,
+    "early_stopping_forbidden": true,
+    "formal_summary_after_exact_issue_count": 365,
+    "issue_is_statistical_unit": true,
+    "model_changes_during_confirmation_forbidden": true,
+    "multiplicity_correction": "Holm",
+    "primary_comparisons": [
+      "dynamic_bayesian_minus_uniform_random",
+      "fixed_normal_bayesian_minus_uniform_random",
+      "fixed_high_bayesian_minus_uniform_random",
+      "changepoint_bayesian_minus_uniform_random"
+    ],
+    "primary_metric": "per_issue_80_dimensional_brier_score",
+    "secondary_metrics": [
+      "mean_brier_all_five_models",
+      "mean_bernoulli_log_loss_all_five_models",
+      "fixed_10_bin_calibration_and_ece",
+      "mean_top_1_through_top_10_hits_all_five_models",
+      "uniform_20_seed_within_issue_mean_top_k",
+      "changepoint_minus_fixed_normal_brier_and_log_loss",
+      "changepoint_minus_fixed_high_brier_and_log_loss",
+      "high_change_trigger_count_and_proportion",
+      "per_issue_index_and_manifest_sha256"
+    ],
+    "secondary_metrics_are_descriptive": true,
+    "secondary_metrics_cannot_select_models": true
+  },
+  "manifest_policy": {
+    "continuity_rule": "previous_target_must_equal_current_data_latest_issue",
+    "directory": "reports/research_v2_prospective_manifests",
+    "existing_manifest_policy": "refuse_overwrite_rewrite_or_delete",
+    "previous_evaluation_chain": "raw_sha256_and_independent_recalculation",
+    "remote_claim_at_generation": false,
+    "sequence": "immutable_manifest_and_evaluation_hash_chain_1_to_365"
+  },
+  "evaluation_policy": {
+    "directory": "results/research_v2_prospective",
+    "duplicate_target_policy": "refuse_overwrite",
+    "finalize_precondition": "complete_365_chain_official_data_recalculation",
+    "final_evaluation_seal_filename": "final_evaluation_seal.json",
+    "local_creation_state": "remote_evaluation_anchor_pending",
+    "previous_evaluation_remote_anchor": "next_manifest_seal_pr",
+    "record_format": "one_immutable_json_per_target_issue",
+    "remote_verification": "github_merged_pr_fail_closed"
+  },
+  "summary_policy": {
+    "data_path": "data_cache/kl8/data.csv",
+    "evaluation_enumeration": "numeric_target_issue_json_only",
+    "final_evaluation_anchor_required": true,
+    "final_seal_remote_reverification": "github_merged_pr_fail_closed",
+    "formal_summary_filename": "formal_summary.json",
+    "official_data_recalculation_required": true
+  },
+  "claim_boundary": {
+    "fair_lottery_note": "若彩票公平且独立，历史模型不应存在稳定预测优势。",
+    "historical_v2_status": "exploratory_development_evidence",
+    "prospective_status_before_365": "ongoing_prospective_presealed_research_no_success_claim"
+  },
+  "source_manifest": {
+    "algorithm": "sha256_utf8_normalized_lf",
+    "files": {
+      ".gitattributes": "ee1f907eb7fbaa3c329b05c8608852c408c8f79e3a62ce5b09cae467085811e4",
+      "scripts/research_v2_prospective.py": "8aa2a6a47a623e824266ece7d06cc7173c55fa442f6c9c0b8fabae3c99c04d2a",
+      "src/research_v2/bayesian.py": "a983d438fb7d9a0d50ff967c3d974f66683964642df0efbd0849f783933b33f2",
+      "src/research_v2/changepoint.py": "01ff685de51757fc2da5cad5ee7265200b776f2b4b9c6339c3228c72ec90ddcd",
+      "src/research_v2/changepoint_evaluation.py": "02b4c577e3e0611af5b568e69b810d983254b68c45feb9ff4d56aa0fff4abae5",
+      "src/research_v2/evaluation.py": "ecc85c7557926e9bdc35b5571c3a887ea64d40b98680a0bae95e8dc3828b1b07",
+      "src/research_v2/metrics.py": "3785f3a4800f94b98d28da3b57f4d65e2420c8b119483cea29e23fa6e7867cd3",
+      "src/research_v2/prospective_monitor.py": "0c78fc8032f02cd8375bee75a094702e9e0fe0b1b1ec49c3965246a6b37570f4"
+    },
+    "fingerprint": "7baa40c8b419e4007830af76816e1d0cd62b44b3297fc958abb73252fe8ae1bf",
+    "change_policy": "任一冻结源码变化时拒绝生成manifest、评价或正式汇总；必须建立新的协议版本。"
+  }
+}
