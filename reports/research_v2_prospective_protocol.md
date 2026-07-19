@@ -107,8 +107,19 @@ evaluation seal 锚定。`formal_summary.json` 和 `final_evaluation_seal.json` 
 
 第 365 期之后没有第 366 份 manifest，故使用 `finalize-evaluation` 验证另一个已
 合并 PR 中的第 365 期 evaluation 原始字节，并独占生成
-`results/research_v2_prospective/final_evaluation_seal.json`。final seal 缺失、PR
-未合并、base 错误、文件缺失或哈希不符时，正式 summary 一律拒绝运行。
+`results/research_v2_prospective/final_evaluation_seal.json`。在发出任何 GitHub
+请求前，finalize 固定读取正式 CSV、manifest 目录和结果目录，先按与 summary
+相同的标准验证完整 365 期 manifest/evaluation 双链、前 364 期远程锚点、正式
+号码以及每期 models/comparisons 的独立复算；364 个任意 JSON 或任一缺失、篡改、
+额外协议文件都不能进入远程锚定步骤。final seal 自身另带排除自哈希字段后的内容
+SHA-256，并继续采用独占写入。
+
+正式 summary 不信任本地 final seal 对 PR 状态的自述。它读取其中的 PR 编号后，
+必须重新查询 GitHub，逐项核对固定仓库、merged 状态、`scientific-model` base、
+合并提交、合并时间及该提交中的第 365 期 evaluation 原始字节。远程 SHA-256 必须
+同时等于本地 evaluation 和 final seal 记录值。final seal 缺失或被本地伪造、
+GitHub 不可用、PR 未合并、base 错误、提交或时间不同、文件缺失或哈希不符时，
+正式 summary 一律 fail closed。
 
 协议 JSON 在 `.gitattributes` 中标记为 `-text`，避免 Windows Git 自动换行转换
 破坏本地和 GitHub raw 原始字节 SHA-256。单元测试使用可替换的 mock 客户端，

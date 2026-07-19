@@ -245,6 +245,7 @@ class _SealClient:
         state: str = "MERGED",
         base: str = GITHUB_BASE_BRANCH,
         merged_at: str = "2026-07-01T11:00:00Z",
+        merge_commit: str = "b" * 40,
         repository: str = GITHUB_REPOSITORY,
         file_bytes: Mapping[str, bytes] | None = None,
     ) -> None:
@@ -253,10 +254,14 @@ class _SealClient:
         self.state = state
         self.base = base
         self.merged_at = merged_at
+        self.merge_commit = merge_commit
         self.repository = repository
+        self.pull_request_calls = 0
+        self.file_calls = 0
 
     def get_pull_request(self, repository: str, pr_number: int) -> Mapping[str, object]:
         del repository
+        self.pull_request_calls += 1
         return {
             "repository": self.repository,
             "number": pr_number,
@@ -264,11 +269,12 @@ class _SealClient:
             "state": self.state,
             "baseRefName": self.base,
             "mergedAt": self.merged_at,
-            "mergeCommit": {"oid": "b" * 40},
+            "mergeCommit": {"oid": self.merge_commit},
         }
 
     def get_file_bytes(self, repository: str, path: str, commit_sha: str) -> bytes:
         del repository, commit_sha
+        self.file_calls += 1
         if self.file_bytes is not None:
             return self.file_bytes[path]
         return self.manifest_bytes
@@ -751,79 +757,31 @@ def test_next_evaluation_records_previous_remote_anchor(
     assert anchor["sha256_at_merge"] == raw_sha256(evaluation_path)
 
 
-def _prepare_final_evaluation(
+def test_finalize_rejects_arbitrary_evaluation_fixtures_before_github(
     tmp_path: Path,
-) -> tuple[Path, Path, Path, int]:
-    root, _, config, _, _, _, _ = _prepare_project(tmp_path)
+) -> None:
+    root, _, config_path, issues, draws, _, _ = _prepare_project(tmp_path)
     results = root / RESULT_RELATIVE_DIR
     results.mkdir(parents=True)
-    first_target = 2030001
-    for offset in range(CONFIRMATION_ISSUE_COUNT - 1):
-        (results / f"{first_target + offset}.json").write_bytes(
+    for offset in range(CONFIRMATION_ISSUE_COUNT):
+        (results / f"{2030001 + offset}.json").write_bytes(
             canonical_json_bytes({"fixture": offset})
         )
-    target = first_target + CONFIRMATION_ISSUE_COUNT - 1
-    evaluation_path = results / f"{target}.json"
-    evaluation = {
-        "schema_version": 2,
-        "evidence_status": EVALUATION_EVIDENCE_STATUS,
-        "freeze_id": FREEZE_ID,
-        "confirmation_index": CONFIRMATION_ISSUE_COUNT,
-        "target_issue": target,
-        "evaluation_locally_created": True,
-        "remote_evaluation_anchor_pending": True,
-        "remote_preseal_verified": True,
-        "sealed_before_official_result": True,
-    }
-    evaluation["evaluation_payload_sha256"] = monitor._evaluation_payload_fingerprint(
-        evaluation
-    )
-    evaluation_path.write_bytes(canonical_json_bytes(evaluation))
-    return root, config, evaluation_path, target
-
-
-@pytest.mark.parametrize(
-    ("client_factory", "message"),
-    [
-        (lambda raw: _SealClient(raw, state="OPEN"), "尚未合并"),
-        (lambda raw: _SealClient(raw, base="main"), "base分支错误"),
-        (lambda raw: _SealClient(b"wrong"), "与本地不符"),
-        (lambda raw: _SealClient(raw, file_bytes={}), "不含第365期evaluation"),
-    ],
-)
-def test_final_evaluation_seal_fail_closed(
-    tmp_path: Path, client_factory: Any, message: str
-) -> None:
-    root, config, evaluation_path, target = _prepare_final_evaluation(tmp_path)
-    with pytest.raises((RuntimeError, ValueError), match=message):
+    client = _SealClient(b"unused")
+    with pytest.raises(ValueError, match="365份manifest"):
         build_final_evaluation_seal(
             project_root=root,
-            config_path=config,
-            results_dir=root / RESULT_RELATIVE_DIR,
-            target_issue=target,
+            config_path=config_path,
+            manifest_dir=root / MANIFEST_RELATIVE_DIR,
+            results_dir=results,
+            official_issues=issues,
+            official_draws=draws,
+            target_issue=2030365,
             evaluation_seal_pr_number=99,
-            seal_client=client_factory(evaluation_path.read_bytes()),
+            seal_client=client,
         )
-
-
-def test_final_evaluation_seal_is_verified_and_non_overwriting(
-    tmp_path: Path,
-) -> None:
-    root, config, evaluation_path, target = _prepare_final_evaluation(tmp_path)
-    seal = build_final_evaluation_seal(
-        project_root=root,
-        config_path=config,
-        results_dir=root / RESULT_RELATIVE_DIR,
-        target_issue=target,
-        evaluation_seal_pr_number=99,
-        seal_client=_SealClient(evaluation_path.read_bytes()),
-    )
-    assert seal["remote_evaluation_anchor_verified"] is True
-    assert seal["evaluation_sha256"] == raw_sha256(evaluation_path)
-    output = write_final_evaluation_seal_exclusive(seal, root / RESULT_RELATIVE_DIR)
-    assert output.name == FINAL_EVALUATION_SEAL_FILENAME
-    with pytest.raises(FileExistsError, match="拒绝覆盖"):
-        write_final_evaluation_seal_exclusive(seal, root / RESULT_RELATIVE_DIR)
+    assert client.pull_request_calls == 0
+    assert client.file_calls == 0
 
 
 def test_summary_rejects_missing_manifest_or_evaluation(tmp_path: Path) -> None:
@@ -839,6 +797,7 @@ def test_summary_rejects_missing_manifest_or_evaluation(tmp_path: Path) -> None:
             config=config,
             official_issues=issues,
             official_draws=draws,
+            seal_client=_SealClient(b"unused"),
         )
 
     previous_target: int | None = None
@@ -880,6 +839,7 @@ def test_summary_rejects_missing_manifest_or_evaluation(tmp_path: Path) -> None:
             config=config,
             official_issues=issues,
             official_draws=draws,
+            seal_client=_SealClient(b"unused"),
         )
     with pytest.raises(ValueError, match="365期确认链已满"):
         next_chain_position(
@@ -910,32 +870,39 @@ def _write_compact_completed_chain(
     for offset in range(CONFIRMATION_ISSUE_COUNT):
         target = first_target + offset
         actual = np.asarray(_draw_for_period(offset), dtype=np.int64)
-        manifest = {
-            "schema_version": 2,
-            "evidence_status": MANIFEST_EVIDENCE_STATUS,
-            "remote_preseal_verified": False,
-            "freeze_id": FREEZE_ID,
-            "freeze_config_sha256": config["configuration_sha256"],
-            "confirmation_index": offset + 1,
-            "protocol_start_target_issue": first_target,
-            "previous_target_issue": previous_target,
-            "previous_manifest_sha256": previous_manifest_digest,
-            "previous_evaluation_target_issue": previous_target,
-            "previous_evaluation_confirmation_index": (offset if offset > 0 else None),
-            "previous_evaluation_path": (
-                previous_evaluation_path.relative_to(root).as_posix()
-                if previous_evaluation_path is not None
-                else None
-            ),
-            "previous_evaluation_sha256": previous_evaluation_digest,
-            "target_issue": target,
-            "source_manifest": config["source_manifest"],
-            "frozen_parameters": config["models"],
-            "history_through_issue": previous_target,
-        }
+        manifest = _synthetic_manifest(target, offset)
+        manifest.update(
+            {
+                "schema_version": 2,
+                "evidence_status": MANIFEST_EVIDENCE_STATUS,
+                "remote_preseal_verified": False,
+                "freeze_id": FREEZE_ID,
+                "freeze_config_sha256": config["configuration_sha256"],
+                "confirmation_index": offset + 1,
+                "protocol_start_target_issue": first_target,
+                "previous_target_issue": previous_target,
+                "previous_manifest_sha256": previous_manifest_digest,
+                "previous_evaluation_target_issue": previous_target,
+                "previous_evaluation_confirmation_index": (
+                    offset if offset > 0 else None
+                ),
+                "previous_evaluation_path": (
+                    previous_evaluation_path.relative_to(root).as_posix()
+                    if previous_evaluation_path is not None
+                    else None
+                ),
+                "previous_evaluation_sha256": previous_evaluation_digest,
+                "source_manifest": config["source_manifest"],
+                "frozen_parameters": config["models"],
+                "history_through_issue": (
+                    previous_target if previous_target is not None else first_target - 1
+                ),
+            }
+        )
         manifest_path = manifests / f"{target}.json"
         manifest_path.write_bytes(canonical_json_bytes(manifest))
         manifest_digest = raw_sha256(manifest_path)
+        metrics = calculate_manifest_metrics(manifest, actual)
         evaluation = {
             "schema_version": 2,
             "evidence_status": EVALUATION_EVIDENCE_STATUS,
@@ -963,6 +930,9 @@ def _write_compact_completed_chain(
                 if previous_evaluation_path is not None
                 else None
             ),
+            "changepoint_state": "high_change" if offset % 5 == 0 else "normal",
+            "models": metrics,
+            "comparisons": calculate_evaluation_comparisons(metrics),
         }
         evaluation["evaluation_payload_sha256"] = (
             monitor._evaluation_payload_fingerprint(evaluation)
@@ -993,6 +963,9 @@ def _write_compact_completed_chain(
             "seal_merged_at_utc": "2028-01-01T00:00:00Z",
             "remote_evaluation_anchor_verified": True,
         }
+        final_seal["final_seal_payload_sha256"] = (
+            monitor._final_seal_payload_fingerprint(final_seal)
+        )
         (results / FINAL_EVALUATION_SEAL_FILENAME).write_bytes(
             canonical_json_bytes(final_seal)
         )
@@ -1012,7 +985,9 @@ def test_completed_chain_requires_final_seal_and_official_data_match(
         root, config, include_final_seal=False
     )
     with pytest.raises(ValueError, match="缺少final evaluation seal"):
-        monitor._validate_completed_chain(manifests, results, config, issues, draws)
+        monitor._validate_completed_chain(
+            manifests, results, config, issues, draws, _SealClient(b"unused")
+        )
     last_target = int(issues[-1])
     last_evaluation = results / f"{last_target}.json"
     seal = {
@@ -1029,23 +1004,40 @@ def test_completed_chain_requires_final_seal_and_official_data_match(
         "seal_merged_at_utc": "2028-01-01T00:00:00Z",
         "remote_evaluation_anchor_verified": True,
     }
+    seal["final_seal_payload_sha256"] = monitor._final_seal_payload_fingerprint(seal)
     (results / FINAL_EVALUATION_SEAL_FILENAME).write_bytes(canonical_json_bytes(seal))
     (results / "formal_summary.json").write_bytes(
         canonical_json_bytes({"fixture": True})
     )
     paired = monitor._validate_completed_chain(
-        manifests, results, config, issues, draws
+        manifests,
+        results,
+        config,
+        issues,
+        draws,
+        _SealClient(
+            last_evaluation.read_bytes(),
+            merged_at="2028-01-01T00:00:00Z",
+            merge_commit="c" * 40,
+        ),
     )
     assert len(paired) == CONFIRMATION_ISSUE_COUNT
     changed_draws = draws.copy()
     changed_draws[10] = np.arange(21, 41, dtype=np.int64)
     with pytest.raises(ValueError, match="actual_numbers与正式输入数据不一致"):
         monitor._validate_completed_chain(
-            manifests, results, config, issues, changed_draws
+            manifests,
+            results,
+            config,
+            issues,
+            changed_draws,
+            _SealClient(b"unused"),
         )
     (results / "unexpected.json").write_bytes(canonical_json_bytes({"bad": True}))
     with pytest.raises(ValueError, match="额外协议JSON"):
-        monitor._validate_completed_chain(manifests, results, config, issues, draws)
+        monitor._validate_completed_chain(
+            manifests, results, config, issues, draws, _SealClient(b"unused")
+        )
 
 
 def test_numeric_evaluation_enumeration_excludes_protocol_files(tmp_path: Path) -> None:
@@ -1102,13 +1094,254 @@ def _synthetic_manifest(target: int, issue_offset: int) -> dict[str, Any]:
     return {"target_issue": target, "models": models}
 
 
+def _write_local_final_seal(
+    *,
+    root: Path,
+    results_dir: Path,
+    target_issue: int,
+    pr_number: int = 999,
+    merge_commit: str = "c" * 40,
+    merged_at: str = "2028-01-01T00:00:00Z",
+) -> tuple[Path, Path, dict[str, Any]]:
+    evaluation_path = results_dir / f"{target_issue}.json"
+    seal: dict[str, Any] = {
+        "schema_version": 2,
+        "evidence_status": FINAL_EVALUATION_SEAL_EVIDENCE_STATUS,
+        "freeze_id": FREEZE_ID,
+        "target_issue": target_issue,
+        "confirmation_index": CONFIRMATION_ISSUE_COUNT,
+        "evaluation_path": evaluation_path.relative_to(root).as_posix(),
+        "evaluation_sha256": raw_sha256(evaluation_path),
+        "seal_pr_number": pr_number,
+        "seal_pr_url": f"https://github.com/{GITHUB_REPOSITORY}/pull/{pr_number}",
+        "seal_merge_commit_sha": merge_commit,
+        "seal_merged_at_utc": merged_at,
+        "remote_evaluation_anchor_verified": True,
+    }
+    seal["final_seal_payload_sha256"] = monitor._final_seal_payload_fingerprint(seal)
+    seal_path = results_dir / FINAL_EVALUATION_SEAL_FILENAME
+    seal_path.write_bytes(canonical_json_bytes(seal))
+    return seal_path, evaluation_path, seal
+
+
+def test_finalize_prevalidates_complete_chain_before_github_and_writes_once(
+    tmp_path: Path,
+) -> None:
+    root, _, config_path, _, _, _, config = _prepare_project(tmp_path)
+    manifests, results, issues, draws = _write_compact_completed_chain(
+        root, config, include_final_seal=False
+    )
+    target = int(issues[-1])
+
+    def rejected(message: str, check_draws: IntArray = draws) -> None:
+        client = _SealClient(b"unused")
+        with pytest.raises(ValueError, match=message):
+            build_final_evaluation_seal(
+                project_root=root,
+                config_path=config_path,
+                manifest_dir=manifests,
+                results_dir=results,
+                official_issues=issues,
+                official_draws=check_draws,
+                target_issue=target,
+                evaluation_seal_pr_number=999,
+                seal_client=client,
+            )
+        assert client.pull_request_calls == 0
+        assert client.file_calls == 0
+
+    missing_manifest = manifests / f"{int(issues[20])}.json"
+    original_manifest = missing_manifest.read_bytes()
+    missing_manifest.unlink()
+    rejected("manifest")
+    missing_manifest.write_bytes(original_manifest)
+
+    chained_manifest = manifests / f"{int(issues[20])}.json"
+    original_manifest = chained_manifest.read_bytes()
+    changed_manifest = cast(
+        dict[str, Any], json.loads(original_manifest.decode("utf-8"))
+    )
+    changed_manifest["previous_manifest_sha256"] = "0" * 64
+    chained_manifest.write_bytes(canonical_json_bytes(changed_manifest))
+    rejected("manifest SHA-256链断裂")
+    chained_manifest.write_bytes(original_manifest)
+
+    anchored_evaluation = results / f"{int(issues[1])}.json"
+    original_evaluation = anchored_evaluation.read_bytes()
+    changed_evaluation = cast(
+        dict[str, Any], json.loads(original_evaluation.decode("utf-8"))
+    )
+    changed_evaluation["previous_evaluation_remote_anchor_verified"] = False
+    changed_evaluation["evaluation_payload_sha256"] = (
+        monitor._evaluation_payload_fingerprint(changed_evaluation)
+    )
+    anchored_evaluation.write_bytes(canonical_json_bytes(changed_evaluation))
+    rejected("上一evaluation未由下一manifest seal PR远程锚定")
+    anchored_evaluation.write_bytes(original_evaluation)
+
+    changed_draws = draws.copy()
+    changed_draws[10] = np.arange(21, 41, dtype=np.int64)
+    rejected("actual_numbers与正式输入数据不一致", changed_draws)
+
+    final_evaluation = results / f"{target}.json"
+    original_final = final_evaluation.read_bytes()
+    changed_final = cast(dict[str, Any], json.loads(original_final.decode("utf-8")))
+    models = cast(dict[str, Any], changed_final["models"])
+    uniform = cast(dict[str, Any], models[UNIFORM_STRATEGY])
+    uniform["brier_score"] = float(uniform["brier_score"]) + 0.01
+    changed_final["evaluation_payload_sha256"] = (
+        monitor._evaluation_payload_fingerprint(changed_final)
+    )
+    final_evaluation.write_bytes(canonical_json_bytes(changed_final))
+    rejected("models不能从manifest和正式数据独立复算")
+    final_evaluation.write_bytes(original_final)
+
+    changed_final = cast(dict[str, Any], json.loads(original_final.decode("utf-8")))
+    comparisons = cast(dict[str, Any], changed_final["comparisons"])
+    comparisons["fixture_tamper"] = True
+    changed_final["evaluation_payload_sha256"] = (
+        monitor._evaluation_payload_fingerprint(changed_final)
+    )
+    final_evaluation.write_bytes(canonical_json_bytes(changed_final))
+    rejected("comparisons不能从正式数据独立复算")
+    final_evaluation.write_bytes(original_final)
+
+    client = _SealClient(final_evaluation.read_bytes())
+    seal = build_final_evaluation_seal(
+        project_root=root,
+        config_path=config_path,
+        manifest_dir=manifests,
+        results_dir=results,
+        official_issues=issues,
+        official_draws=draws,
+        target_issue=target,
+        evaluation_seal_pr_number=999,
+        seal_client=client,
+    )
+    assert client.pull_request_calls == 1
+    assert client.file_calls == 1
+    assert seal["evaluation_sha256"] == raw_sha256(final_evaluation)
+    output = write_final_evaluation_seal_exclusive(seal, results)
+    assert output.name == FINAL_EVALUATION_SEAL_FILENAME
+    with pytest.raises(FileExistsError, match="拒绝覆盖"):
+        write_final_evaluation_seal_exclusive(seal, results)
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("unmerged", "尚未合并"),
+        ("wrong_base", "base分支错误"),
+        ("wrong_commit", "合并提交与本地记录不一致"),
+        ("wrong_time", "合并时间与本地记录不一致"),
+        ("missing_file", "不含第365期evaluation"),
+        ("wrong_file", "与本地不符"),
+        ("offline", "GitHub API不可用"),
+    ],
+)
+def test_summary_revalidates_final_seal_with_github_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    message: str,
+) -> None:
+    root, _, _, _, _, _, config = _prepare_project(tmp_path)
+    results = root / RESULT_RELATIVE_DIR
+    results.mkdir(parents=True)
+    target = 2030365
+    evaluation_path = results / f"{target}.json"
+    evaluation_path.write_bytes(canonical_json_bytes({"target_issue": target}))
+    entry = ManifestChainEntry(
+        path=root / MANIFEST_RELATIVE_DIR / f"{target}.json",
+        payload=_synthetic_manifest(target, 364),
+        sha256="a" * 64,
+        confirmation_index=CONFIRMATION_ISSUE_COUNT,
+        target_issue=target,
+    )
+    paired = ((entry, {}, np.asarray(_draw_for_period(364), dtype=np.int64)),)
+    monkeypatch.setattr(
+        monitor,
+        "_validate_completed_chain_without_final_seal",
+        lambda *args, **kwargs: paired,
+    )
+    _write_local_final_seal(root=root, results_dir=results, target_issue=target)
+    raw = evaluation_path.read_bytes()
+    if case == "unmerged":
+        client: _SealClient = _SealClient(raw, state="OPEN")
+    elif case == "wrong_base":
+        client = _SealClient(raw, base="main")
+    elif case == "wrong_commit":
+        client = _SealClient(
+            raw, merged_at="2028-01-01T00:00:00Z", merge_commit="b" * 40
+        )
+    elif case == "wrong_time":
+        client = _SealClient(raw, merge_commit="c" * 40)
+    elif case == "missing_file":
+        client = _SealClient(raw, file_bytes={})
+    elif case == "wrong_file":
+        client = _SealClient(b"wrong")
+    else:
+        client = _FailingSealClient(raw)
+    with pytest.raises((RuntimeError, ValueError), match=message):
+        build_formal_summary(
+            manifest_dir=root / MANIFEST_RELATIVE_DIR,
+            results_dir=results,
+            config=config,
+            official_issues=np.asarray([target], dtype=np.int64),
+            official_draws=np.asarray([_draw_for_period(364)], dtype=np.int64),
+            seal_client=client,
+        )
+
+
+def test_summary_rejects_locally_forged_final_seal_before_github(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _, _, _, _, _, config = _prepare_project(tmp_path)
+    results = root / RESULT_RELATIVE_DIR
+    results.mkdir(parents=True)
+    target = 2030365
+    evaluation_path = results / f"{target}.json"
+    evaluation_path.write_bytes(canonical_json_bytes({"target_issue": target}))
+    entry = ManifestChainEntry(
+        path=root / MANIFEST_RELATIVE_DIR / f"{target}.json",
+        payload=_synthetic_manifest(target, 364),
+        sha256="a" * 64,
+        confirmation_index=CONFIRMATION_ISSUE_COUNT,
+        target_issue=target,
+    )
+    monkeypatch.setattr(
+        monitor,
+        "_validate_completed_chain_without_final_seal",
+        lambda *args, **kwargs: (
+            (entry, {}, np.asarray(_draw_for_period(364), dtype=np.int64)),
+        ),
+    )
+    seal_path, _, seal = _write_local_final_seal(
+        root=root, results_dir=results, target_issue=target
+    )
+    seal["seal_pr_number"] = 12345
+    seal_path.write_bytes(canonical_json_bytes(seal))
+    client = _SealClient(evaluation_path.read_bytes())
+    with pytest.raises(ValueError, match="内容SHA-256不匹配"):
+        build_formal_summary(
+            manifest_dir=root / MANIFEST_RELATIVE_DIR,
+            results_dir=results,
+            config=config,
+            official_issues=np.asarray([target], dtype=np.int64),
+            official_draws=np.asarray([_draw_for_period(364)], dtype=np.int64),
+            seal_client=client,
+        )
+    assert client.pull_request_calls == 0
+    assert client.file_calls == 0
+
+
 def test_complete_summary_recomputes_secondary_metrics_and_primary_family(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _, _, _, _, _, _, config = _prepare_project(tmp_path)
+    root, _, _, _, _, _, config = _prepare_project(tmp_path)
     paired: list[tuple[ManifestChainEntry, dict[str, Any], IntArray]] = []
-    results_dir = tmp_path / "results"
-    results_dir.mkdir(exist_ok=True)
+    results_dir = root / RESULT_RELATIVE_DIR
+    results_dir.mkdir(parents=True, exist_ok=True)
     official_issues: list[int] = []
     official_draws: list[IntArray] = []
     for offset in range(CONFIRMATION_ISSUE_COUNT):
@@ -1135,15 +1368,29 @@ def test_complete_summary_recomputes_secondary_metrics_and_primary_family(
         official_issues.append(target)
         official_draws.append(actual)
     monkeypatch.setattr(
-        monitor, "_validate_completed_chain", lambda *args: tuple(paired)
+        monitor,
+        "_validate_completed_chain_without_final_seal",
+        lambda *args, **kwargs: tuple(paired),
+    )
+    final_target = int(official_issues[-1])
+    _, final_evaluation, _ = _write_local_final_seal(
+        root=root, results_dir=results_dir, target_issue=final_target
+    )
+    client = _SealClient(
+        final_evaluation.read_bytes(),
+        merged_at="2028-01-01T00:00:00Z",
+        merge_commit="c" * 40,
     )
     summary = build_formal_summary(
-        manifest_dir=tmp_path / "manifests",
+        manifest_dir=root / MANIFEST_RELATIVE_DIR,
         results_dir=results_dir,
         config=config,
         official_issues=np.asarray(official_issues, dtype=np.int64),
         official_draws=np.asarray(official_draws, dtype=np.int64),
+        seal_client=client,
     )
+    assert client.pull_request_calls == 1
+    assert client.file_calls == 1
     assert summary["issue_count"] == 365
     primary = cast(dict[str, Any], summary["primary_inference"])
     assert set(primary["comparisons"]) == set(PRIMARY_COMPARISON_MODELS)

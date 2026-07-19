@@ -270,6 +270,22 @@ def _validate_evaluation_payload_fingerprint(record: Mapping[str, object]) -> No
         raise ValueError("evaluation内容SHA-256不匹配，文件已被修改")
 
 
+def _final_seal_payload_fingerprint(seal: Mapping[str, object]) -> str:
+    copied = dict(seal)
+    copied.pop("final_seal_payload_sha256", None)
+    return hashlib.sha256(canonical_json_bytes(copied)).hexdigest()
+
+
+def _validate_final_seal_payload_fingerprint(seal: Mapping[str, object]) -> None:
+    configured = seal.get("final_seal_payload_sha256")
+    if (
+        not isinstance(configured, str)
+        or not SHA256_PATTERN.fullmatch(configured)
+        or configured != _final_seal_payload_fingerprint(seal)
+    ):
+        raise ValueError("final evaluation seal内容SHA-256不匹配，文件已被修改")
+
+
 def _load_json_object(path: Path) -> dict[str, Any]:
     try:
         parsed: object = json.loads(path.read_text(encoding="utf-8"))
@@ -511,6 +527,7 @@ def _validate_freeze_contract(config: Mapping[str, Any]) -> None:
     if config.get("evaluation_policy") != {
         "directory": RESULT_RELATIVE_DIR.as_posix(),
         "duplicate_target_policy": "refuse_overwrite",
+        "finalize_precondition": "complete_365_chain_official_data_recalculation",
         "final_evaluation_seal_filename": FINAL_EVALUATION_SEAL_FILENAME,
         "local_creation_state": "remote_evaluation_anchor_pending",
         "previous_evaluation_remote_anchor": "next_manifest_seal_pr",
@@ -522,6 +539,7 @@ def _validate_freeze_contract(config: Mapping[str, Any]) -> None:
         "data_path": DATA_RELATIVE_PATH.as_posix(),
         "evaluation_enumeration": "numeric_target_issue_json_only",
         "final_evaluation_anchor_required": True,
+        "final_seal_remote_reverification": "github_merged_pr_fail_closed",
         "formal_summary_filename": FORMAL_SUMMARY_FILENAME,
         "official_data_recalculation_required": True,
     }:
@@ -1411,7 +1429,10 @@ def build_final_evaluation_seal(
     *,
     project_root: Path,
     config_path: Path,
+    manifest_dir: Path,
     results_dir: Path,
+    official_issues: IntArray,
+    official_draws: IntArray,
     target_issue: int,
     evaluation_seal_pr_number: int,
     seal_client: GitHubSealClient,
@@ -1421,30 +1442,18 @@ def build_final_evaluation_seal(
     config = load_and_verify_freeze_config(project_root, config_path)
     if config.get("freeze_status") != FREEZE_ACTIVE:
         raise RuntimeError("冻结配置仍为pending，拒绝finalize evaluation")
-    paths = _numeric_evaluation_paths(results_dir)
-    if len(paths) != CONFIRMATION_ISSUE_COUNT:
-        raise ValueError("finalize前必须恰好存在365份逐期evaluation")
+    paired = _validate_completed_chain_without_final_seal(
+        manifest_dir,
+        results_dir,
+        config,
+        official_issues,
+        official_draws,
+        reject_protocol_outputs=True,
+    )
+    final_entry, _, _ = paired[-1]
+    if target_issue != final_entry.target_issue:
+        raise ValueError("finalize target_issue必须等于完整确认链第365期")
     evaluation_path = results_dir / f"{target_issue}.json"
-    if evaluation_path not in paths:
-        raise ValueError("finalize目标evaluation不存在")
-    evaluation = _load_canonical_json_object(evaluation_path, "第365期evaluation")
-    if evaluation.get("target_issue") != target_issue:
-        raise ValueError("finalize target_issue与evaluation不一致")
-    if evaluation.get("confirmation_index") != CONFIRMATION_ISSUE_COUNT:
-        raise ValueError("finalize只允许第365期evaluation")
-    if evaluation.get("freeze_id") != FREEZE_ID:
-        raise ValueError("第365期evaluation freeze_id不匹配")
-    if evaluation.get("evidence_status") != EVALUATION_EVIDENCE_STATUS:
-        raise ValueError("第365期evaluation证据状态不匹配")
-    if evaluation.get("remote_preseal_verified") is not True:
-        raise ValueError("第365期manifest未通过开奖前远程封存")
-    if evaluation.get("sealed_before_official_result") is not True:
-        raise ValueError("第365期manifest不是开奖前远程封存")
-    if evaluation.get("evaluation_locally_created") is not True:
-        raise ValueError("第365期evaluation缺少本地创建标记")
-    if evaluation.get("remote_evaluation_anchor_pending") is not True:
-        raise ValueError("第365期evaluation不处于待远程锚定状态")
-    _validate_evaluation_payload_fingerprint(evaluation)
     repository_path = _relative_posix(project_root, evaluation_path)
     github = _require_mapping(config["github"], "github")
     anchor = verify_remote_file_anchor(
@@ -1455,7 +1464,7 @@ def build_final_evaluation_seal(
         local_path=evaluation_path,
         repository_path=repository_path,
     )
-    return {
+    seal: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "evidence_status": FINAL_EVALUATION_SEAL_EVIDENCE_STATUS,
         "freeze_id": FREEZE_ID,
@@ -1469,6 +1478,8 @@ def build_final_evaluation_seal(
         "seal_merged_at_utc": anchor.seal_merged_at_utc,
         "remote_evaluation_anchor_verified": True,
     }
+    seal["final_seal_payload_sha256"] = _final_seal_payload_fingerprint(seal)
+    return seal
 
 
 def write_final_evaluation_seal_exclusive(
@@ -1478,6 +1489,7 @@ def write_final_evaluation_seal_exclusive(
 
     if seal.get("remote_evaluation_anchor_verified") is not True:
         raise ValueError("未通过远程锚定验证的final seal不得写入")
+    _validate_final_seal_payload_fingerprint(seal)
     results_dir.mkdir(parents=True, exist_ok=True)
     path = results_dir / FINAL_EVALUATION_SEAL_FILENAME
     try:
@@ -1711,13 +1723,18 @@ def moving_block_bootstrap_inference(values: FloatArray) -> BootstrapInference:
     )
 
 
-def _validate_completed_chain(
+def _validate_completed_chain_without_final_seal(
     manifest_dir: Path,
     results_dir: Path,
     config: Mapping[str, Any],
     official_issues: IntArray,
     official_draws: IntArray,
+    *,
+    reject_protocol_outputs: bool,
 ) -> tuple[tuple[ManifestChainEntry, dict[str, Any], IntArray], ...]:
+    """复核完整365期双哈希链、正式数据和全部逐期计算。"""
+
+    _validate_freeze_contract(config)
     issue_values, draw_values = validate_issue_draws(official_issues, official_draws)
     entries = _load_manifest_chain(manifest_dir, config)
     if len(entries) != CONFIRMATION_ISSUE_COUNT:
@@ -1741,6 +1758,11 @@ def _validate_completed_chain(
     unexpected = all_json_names - expected_names - allowed_non_evaluation
     if unexpected:
         raise ValueError("结果目录包含额外协议JSON文件")
+    if reject_protocol_outputs:
+        if FINAL_EVALUATION_SEAL_FILENAME in all_json_names:
+            raise ValueError("final evaluation seal已存在，拒绝重复finalize")
+        if FORMAL_SUMMARY_FILENAME in all_json_names:
+            raise ValueError("formal summary已存在，拒绝事后finalize")
     records = {
         path.stem: _load_canonical_json_object(path, "evaluation") for path in paths
     }
@@ -1775,6 +1797,11 @@ def _validate_completed_chain(
         official_actual = cast(IntArray, draw_values[int(matches[0])].copy())
         if record.get("actual_numbers") != sorted(map(int, official_actual)):
             raise ValueError("evaluation actual_numbers与正式输入数据不一致")
+        recomputed = calculate_manifest_metrics(entry.payload, official_actual)
+        if record.get("models") != recomputed:
+            raise ValueError("evaluation models不能从manifest和正式数据独立复算")
+        if record.get("comparisons") != calculate_evaluation_comparisons(recomputed):
+            raise ValueError("evaluation comparisons不能从正式数据独立复算")
         paired.append((entry, record, official_actual))
 
     for offset in range(CONFIRMATION_ISSUE_COUNT - 1):
@@ -1809,13 +1836,27 @@ def _validate_completed_chain(
         }:
             raise ValueError("下一manifest seal PR的上一evaluation远程锚点不匹配")
 
-    final_entry, _, _ = paired[-1]
+    return tuple(paired)
+
+
+def _validate_final_evaluation_seal(
+    *,
+    results_dir: Path,
+    config: Mapping[str, Any],
+    final_entry: ManifestChainEntry,
+    seal_client: GitHubSealClient,
+) -> dict[str, Any]:
+    """本地校验final seal，并向GitHub重新验证第365期evaluation锚点。"""
+
     final_evaluation_path = results_dir / f"{final_entry.target_issue}.json"
     final_digest = raw_sha256(final_evaluation_path)
     final_seal_path = results_dir / FINAL_EVALUATION_SEAL_FILENAME
     if not final_seal_path.is_file():
         raise ValueError("第365期evaluation缺少final evaluation seal")
     final_seal = _load_canonical_json_object(final_seal_path, "final evaluation seal")
+    _validate_final_seal_payload_fingerprint(final_seal)
+    if final_seal.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError("final evaluation seal schema_version不匹配")
     if final_seal.get("evidence_status") != FINAL_EVALUATION_SEAL_EVIDENCE_STATUS:
         raise ValueError("final evaluation seal证据状态不匹配")
     if final_seal.get("freeze_id") != FREEZE_ID:
@@ -1848,8 +1889,52 @@ def _validate_completed_chain(
     merged_at = final_seal.get("seal_merged_at_utc")
     if not isinstance(merged_at, str):
         raise ValueError("final evaluation seal缺少合并时间")
-    _canonical_utc(merged_at, "final evaluation seal合并时间")
-    return tuple(paired)
+    canonical_merged_at, _ = _canonical_utc(merged_at, "final evaluation seal合并时间")
+    github = _require_mapping(config.get("github"), "github")
+    anchor = verify_remote_file_anchor(
+        client=seal_client,
+        repository=str(github["repository"]),
+        base_branch=str(github["base_branch"]),
+        pr_number=int(final_seal["seal_pr_number"]),
+        local_path=final_evaluation_path,
+        repository_path=expected_final_path,
+    )
+    if anchor.seal_pr_url != final_seal.get("seal_pr_url"):
+        raise ValueError("GitHub返回的final seal PR URL与本地记录不一致")
+    if anchor.seal_merge_commit_sha != merge_sha:
+        raise ValueError("GitHub返回的final seal合并提交与本地记录不一致")
+    if anchor.seal_merged_at_utc != canonical_merged_at:
+        raise ValueError("GitHub返回的final seal合并时间与本地记录不一致")
+    if anchor.file_sha256_at_merge != final_digest:
+        raise ValueError("GitHub final seal远程evaluation SHA-256与本地记录不一致")
+    return final_seal
+
+
+def _validate_completed_chain(
+    manifest_dir: Path,
+    results_dir: Path,
+    config: Mapping[str, Any],
+    official_issues: IntArray,
+    official_draws: IntArray,
+    seal_client: GitHubSealClient,
+) -> tuple[tuple[ManifestChainEntry, dict[str, Any], IntArray], ...]:
+    """复核完整链，并重新向GitHub验证final evaluation seal。"""
+
+    paired = _validate_completed_chain_without_final_seal(
+        manifest_dir,
+        results_dir,
+        config,
+        official_issues,
+        official_draws,
+        reject_protocol_outputs=False,
+    )
+    _validate_final_evaluation_seal(
+        results_dir=results_dir,
+        config=config,
+        final_entry=paired[-1][0],
+        seal_client=seal_client,
+    )
+    return paired
 
 
 def _serialize_calibration(
@@ -1881,6 +1966,7 @@ def build_formal_summary(
     config: Mapping[str, Any],
     official_issues: IntArray,
     official_draws: IntArray,
+    seal_client: GitHubSealClient,
 ) -> dict[str, object]:
     """验证完整365期链，并独立复算主要与全部次要指标。"""
 
@@ -1888,7 +1974,12 @@ def build_formal_summary(
     if config.get("freeze_status") != FREEZE_ACTIVE:
         raise RuntimeError("冻结配置仍为pending，拒绝正式summary")
     paired = _validate_completed_chain(
-        manifest_dir, results_dir, config, official_issues, official_draws
+        manifest_dir,
+        results_dir,
+        config,
+        official_issues,
+        official_draws,
+        seal_client,
     )
     probabilities: dict[str, list[FloatArray]] = {
         strategy: [] for strategy in PROBABILITY_STRATEGIES

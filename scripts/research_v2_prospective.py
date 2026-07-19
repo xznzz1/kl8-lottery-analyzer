@@ -246,7 +246,12 @@ def _evaluate_command(
     return write_evaluation_exclusive(record, results_dir)
 
 
-def _summary_command(args: argparse.Namespace, project_root: Path) -> Path:
+def _summary_command(
+    args: argparse.Namespace,
+    project_root: Path,
+    *,
+    seal_client: GitHubSealClient | None = None,
+) -> Path:
     data_path = require_contract_path(
         project_root, DATA_RELATIVE_PATH, DATA_RELATIVE_PATH, "正式数据路径"
     )
@@ -267,6 +272,7 @@ def _summary_command(args: argparse.Namespace, project_root: Path) -> Path:
         config=config,
         official_issues=issues,
         official_draws=draws,
+        seal_client=seal_client or GhCliSealClient(),
     )
     output = results_dir / FORMAL_SUMMARY_FILENAME
     try:
@@ -283,17 +289,30 @@ def _finalize_evaluation_command(
     *,
     seal_client: GitHubSealClient | None = None,
 ) -> Path:
+    data_path = require_contract_path(
+        project_root, DATA_RELATIVE_PATH, DATA_RELATIVE_PATH, "正式数据路径"
+    )
     config_path = require_contract_path(
         project_root, FREEZE_RELATIVE_PATH, FREEZE_RELATIVE_PATH, "冻结配置路径"
     )
     results_dir = require_contract_path(
         project_root, RESULT_RELATIVE_DIR, RESULT_RELATIVE_DIR, "前瞻结果目录"
     )
+    manifest_dir = require_contract_path(
+        project_root,
+        MANIFEST_RELATIVE_DIR,
+        MANIFEST_RELATIVE_DIR,
+        "manifest目录",
+    )
     _validated_active_config(project_root, config_path)
+    issues, draws = load_history_csv(data_path)
     seal = build_final_evaluation_seal(
         project_root=project_root,
         config_path=config_path,
+        manifest_dir=manifest_dir,
         results_dir=results_dir,
+        official_issues=issues,
+        official_draws=draws,
         target_issue=int(args.target_issue),
         evaluation_seal_pr_number=int(args.evaluation_seal_pr_number),
         seal_client=seal_client or GhCliSealClient(),
